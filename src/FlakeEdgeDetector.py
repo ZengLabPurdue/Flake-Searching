@@ -80,7 +80,7 @@ laplacian_abs = cv2.convertScaleAbs(laplacian)
 gray = cv2.cvtColor(processed_image_uint8, cv2.COLOR_BGR2GRAY)
 
 # Apply threshold to get binary image
-_, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+_, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
 
 # Create a kernel
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
@@ -95,7 +95,6 @@ thresh = cv2.adaptiveThreshold(gradient, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
 # Find contours
 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 #print(f"Number of contours found: {len(contours)}")
-
 
 #
 # Displaying Image

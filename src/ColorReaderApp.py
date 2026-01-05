@@ -53,7 +53,7 @@ class ColorReaderApp:
         )
         self.right_placeholder.place(relx=0.5, rely=0.5, anchor="center")
 
-        self.figure = Figure(figsize = (4,4), dpi=100, constrained_layout=True)
+        self.figure = Figure(dpi=100)
         self.ax = self.figure.add_subplot(111)
 
         self.init_color_picker_tool()
@@ -74,7 +74,6 @@ class ColorReaderApp:
         self.plot_canvas = FigureCanvasTkAgg(self.figure, master=self.right_panel)
         self.plot_widget = self.plot_canvas.get_tk_widget()
         self.plot_widget.pack(fill=tk.BOTH, expand=True)
-        self.hide_line_plot()
 
         self.placeholder = tk.Label(
             self.right_panel,
@@ -97,15 +96,17 @@ class ColorReaderApp:
         self.avg_rect = None
         self.avg_start = None
 
-        self.create_menu()
-        self.update_line_plot()
-
         self.current_tool = None
         self.currently_drawing = False
+
+        self.update_line_plot()
+        self.hide_line_plot()
+        self.create_menu()
 
         self.canvas.bind("<Button-1>", self.on_canvas_click)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
 
     def init_color_picker_tool(self):
         self.color_display_frame = tk.Frame(self.right_panel, bg="white")
@@ -213,6 +214,8 @@ class ColorReaderApp:
             self.show_linetype_menu()
             self.show_channel_menu()
             self.plot_widget.pack(fill=tk.BOTH, expand=True)
+            self.update_line_plot()
+            self.plot_canvas.draw()
         elif tool == "average":
             self.root.title("Color Reader App - Average Color Tool")
             self.show_averagetype_menu()
@@ -408,33 +411,31 @@ class ColorReaderApp:
         self.update_line_plot()
         self.plot_canvas.draw()
 
-        self.canvas.bind("<Configure>", self.on_canvas_resize)
-
     def on_canvas_resize(self, event):
-        if self.image is None:
-            return
-        
-        self.prev_image_dim = (self.display_image.width, self.display_image.height)
 
-        self.display_image = self.image.copy()
-        self.display_image.thumbnail((event.width, event.height), Image.Resampling.LANCZOS)
-        self.tk_image = ImageTk.PhotoImage(self.display_image)
+        if self.image is not None:
+            self.prev_image_dim = (self.display_image.width, self.display_image.height)
 
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
+            self.display_image = self.image.copy()
+            self.display_image.thumbnail((event.width, event.height), Image.Resampling.LANCZOS)
+            self.tk_image = ImageTk.PhotoImage(self.display_image)
 
-        scale_x = self.display_image.width / self.prev_image_dim[0]
-        scale_y = self.display_image.height / self.prev_image_dim[1]
+            self.canvas.delete("all")
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
 
-        if self.current_line and self.path:
-            self.path = [(x * scale_x, y * scale_y) for x, y in self.path]
-            flat = []
-            flat = [v for pt in self.path for v in pt]
-            self.current_line = self.canvas.create_line(
-                *flat, fill="red", width=2, smooth=self.curved_mode
-            )
+            scale_x = self.display_image.width / self.prev_image_dim[0]
+            scale_y = self.display_image.height / self.prev_image_dim[1]
+
+            if self.current_line and self.path:
+                self.path = [(x * scale_x, y * scale_y) for x, y in self.path]
+                flat = []
+                flat = [v for pt in self.path for v in pt]
+                self.current_line = self.canvas.create_line(
+                    *flat, fill="red", width=2, smooth=self.curved_mode
+                )
 
         self.update_line_plot()
+        self.plot_canvas.draw()
     
     def on_canvas_click(self, event):
         if getattr(self, "current_tool", None) == "picker":
