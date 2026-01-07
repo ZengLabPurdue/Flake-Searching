@@ -28,12 +28,14 @@ red_image = image[:, :, 2]
 # Filters
 #
 
-# Apply Gaussian blur to reduce noise
+# Apply gaussian blur to reduce noise
 #blurred_image = cv2.GaussianBlur(gray_image, (5, 5), 1.4)
 
-# Apply Average blur to reduce noise
+# Apply average blur to reduce noise
 #blurred_image = cv2.blur(gray_image, (100, 100))
 
+# Apply bilateral filter to reduce noise
+#smoothed_image = cv2.bilateralFilter(gray_image, d=9, sigmaColor=75, sigmaSpace=20)
 
 #----------------------------
 # Functions
@@ -43,14 +45,12 @@ red_image = image[:, :, 2]
 def SurfaceGraphing(image):
     Z = image.squeeze()
 
-    # Create coordinate grid
     Z_small = Z[::10, ::10]
 
     x = np.arange(Z_small.shape[1])
     y = np.arange(Z_small.shape[0])
     X, Y = np.meshgrid(x, y)
 
-    # Plot
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -82,3 +82,15 @@ def ChannelData3DPlot(image):
     ax.set_zlabel("Blue")
 
     plt.show()
+
+#----------------------------
+# Testing
+#----------------------------
+
+'''
+SurfaceGraphing(gray_image)
+SurfaceGraphing(blurred_image)
+SurfaceGraphing(smoothed_image)
+'''
+
+#ChannelData3DPlot(image)
