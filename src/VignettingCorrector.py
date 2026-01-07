@@ -1,9 +1,5 @@
-import math
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib import cm
-from mpl_toolkits.mplot3d import Axes3D
 from tkinter import filedialog
 import DataVisualizer
 
@@ -14,6 +10,10 @@ import DataVisualizer
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 flatfield_path =  filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
+
+#----------------------------
+# Vignetting Correction Function
+#----------------------------
 
 def vignetting_correction(image_path, flatfield_path):
 
@@ -34,6 +34,8 @@ def vignetting_correction(image_path, flatfield_path):
 
     return corrected_image
 
-DataVisualizer.SurfaceGraphing(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+#DataVisualizer.SurfaceGraphing(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+#DataVisualizer.ChannelData3DPlot(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
 corrected_image = vignetting_correction(image_path, flatfield_path)
-DataVisualizer.SurfaceGraphing(cv2.cvtColor(corrected_image, cv2.COLOR_BGR2GRAY))
+#DataVisualizer.SurfaceGraphing(cv2.cvtColor(corrected_image, cv2.COLOR_BGR2GRAY))
+#DataVisualizer.ChannelData3DPlot(cv2.cvtColor(corrected_image, cv2.COLOR_BGR2GRAY))
