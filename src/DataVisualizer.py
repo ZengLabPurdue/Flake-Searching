@@ -41,8 +41,8 @@ red_image = image[:, :, 2]
 # Functions
 #----------------------------
 
-# 3D Surface Graphing
-def SurfaceGraphing(image):
+# 3D surface graphing
+def surface_graphing(image):
     Z = image.squeeze()
 
     Z_small = Z[::10, ::10]
@@ -62,8 +62,8 @@ def SurfaceGraphing(image):
 
     plt.show()
 
-# 3D Visualization of Channel Data
-def ChannelData3DPlot(image):
+# 3D visualization of channel data
+def channel_data_3D_plot(image):
     pixels = image.reshape(-1, 3)
     pixels = pixels[::100] 
     pixels = np.unique(pixels, axis=0) 
@@ -75,12 +75,42 @@ def ChannelData3DPlot(image):
     fig = plt.figure(figsize=(8, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    ax.scatter(r, g, b, c=pixels/255, s=2)
+    ax.scatter(b, g, r, c=pixels/255, s=2)
 
-    ax.set_xlabel("Red")
+    ax.set_xlabel("Blue")
     ax.set_ylabel("Green")
-    ax.set_zlabel("Blue")
+    ax.set_zlabel("Red")
 
+    plt.show()
+
+# Displays colors
+def display_colors(rgb_colors, grid_shape):
+
+    rows, cols = grid_shape
+    n = len(rgb_colors)
+
+    if rows * cols < n:
+        raise ValueError("Grid shape is too small for the number of colors")
+
+    fig, axes = plt.subplots(rows, cols, figsize=(2 * cols, 2 * rows))
+
+    axes = np.atleast_2d(axes)
+
+    for idx in range(rows * cols):
+        r, c = divmod(idx, cols)
+        ax = axes[r, c]
+
+        if idx < n:
+            color = rgb_colors[idx]
+            swatch = np.ones((50, 50, 3), dtype=np.uint8) * color
+            ax.imshow(swatch)
+            ax.set_title(f"Cluster {idx}")
+        else:
+            ax.axis("off")
+
+        ax.axis("off")
+
+    plt.tight_layout()
     plt.show()
 
 #----------------------------
@@ -88,9 +118,9 @@ def ChannelData3DPlot(image):
 #----------------------------
 
 '''
-SurfaceGraphing(gray_image)
-SurfaceGraphing(blurred_image)
-SurfaceGraphing(smoothed_image)
+surface_graphing(gray_image)
+surface_graphing(blurred_image)
+surface_graphing(smoothed_image)
 '''
 
-#ChannelData3DPlot(image)
+#channel_data_3D_plot(image)
