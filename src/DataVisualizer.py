@@ -10,7 +10,6 @@ from tkinter import filedialog
 # Load Image
 #----------------------------
 
-'''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -18,7 +17,6 @@ gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 blue_image = image[:, :, 0]
 green_image = image[:, :, 1]
 red_image = image[:, :, 2]
-'''
 
 #----------------------------
 # Image Processing
@@ -63,27 +61,59 @@ def surface_graphing(image):
     plt.show()
 
 # 3D visualization of channel data
-def channel_data_3D_plot(image):
-    pixels = image.reshape(-1, 3)
-    pixels = pixels[::100] 
-    pixels = np.unique(pixels, axis=0) 
+def channel_data_3D_plot(image, colorspace="bgr", sample_step=100, point_size=2):
 
-    r = pixels[:, 0]
-    g = pixels[:, 1]
-    b = pixels[:, 2]
+    if colorspace.lower() == "bgr":
+        plot_img = image
+        display_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        labels = ("Blue", "Green", "Red")
+
+    elif colorspace.lower() == "rgb":
+        plot_img = image
+        display_img = image
+        labels = ("Red", "Green", "Blue")
+
+    elif colorspace.lower() == "lab":
+        plot_img = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        display_img = cv2.cvtColor(plot_img, cv2.COLOR_LAB2RGB)
+        labels = ("L*", "a*", "b*")
+
+    elif colorspace.lower() == "hsv":
+        plot_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        display_img = cv2.cvtColor(plot_img, cv2.COLOR_HSV2RGB)
+        labels = ("Hue", "Saturation", "Value")
+
+    else:
+        raise ValueError("colorspace must be 'bgr', 'rgb', 'lab', or 'hsv'")
+
+    pixels = plot_img.reshape(-1, 3)
+    colors = display_img.reshape(-1, 3)
+
+    pixels = pixels[::sample_step]
+    colors = colors[::sample_step]
+
+    pixels, unique_idx = np.unique(pixels, axis=0, return_index=True)
+    colors = colors[unique_idx]
+
+    colors = colors / 255.0
+
+    x, y, z = pixels[:, 0], pixels[:, 1], pixels[:, 2]
 
     fig = plt.figure(figsize=(8, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111, projection="3d")
 
-    ax.scatter(b, g, r, c=pixels/255, s=2)
+    ax.scatter(x, y, z, c=colors, s=point_size)
 
-    ax.set_xlabel("Blue")
-    ax.set_ylabel("Green")
-    ax.set_zlabel("Red")
+    ax.set_xlabel(labels[0])
+    ax.set_ylabel(labels[1])
+    ax.set_zlabel(labels[2])
 
+    ax.set_title(f"3D Color Distribution ({colorspace.upper()})")
+
+    plt.tight_layout()
     plt.show()
 
-# Displays colors
+# Displays provided colors
 def display_colors(rgb_colors, grid_shape):
 
     rows, cols = grid_shape
@@ -113,6 +143,82 @@ def display_colors(rgb_colors, grid_shape):
     plt.tight_layout()
     plt.show()
 
+# Displays all colors of an image sorted by intensity
+def display_image_colors(image, input_colorspace="bgr", sorting="lab", cell_size=7):
+
+    if input_colorspace == "bgr":
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    elif input_colorspace == "rgb":
+        rgb = image.copy()
+    else:
+        raise ValueError("input_colorspace must be 'bgr' or 'rgb'")
+
+    pixels = rgb.reshape(-1, 3)
+    unique_colors = np.unique(pixels, axis=0)
+
+    if sorting == "intensity":
+        intensities = (
+            0.2126 * unique_colors[:, 0] +
+            0.7152 * unique_colors[:, 1] +
+            0.0722 * unique_colors[:, 2]
+        )
+        sort_idx = np.argsort(intensities)
+
+    elif sorting == "lab":
+        lab = cv2.cvtColor(
+            unique_colors.reshape(-1, 1, 3),
+            cv2.COLOR_RGB2LAB
+        ).reshape(-1, 3)
+
+        sort_idx = np.lexsort((lab[:, 2], lab[:, 1], lab[:, 0]))
+
+    else:
+        raise ValueError("sorting must be 'intensity' or 'lab'")
+
+    unique_colors = unique_colors[sort_idx]
+
+    fig = plt.figure(figsize=(16, 9))
+
+    plt.axis("off")
+
+    fig.canvas.draw()
+    width_px, height_px = fig.canvas.get_width_height()
+
+    cols = width_px // cell_size
+    rows = height_px // cell_size
+    n_slots = cols * rows
+
+    if len(unique_colors) > n_slots:
+        idx = np.linspace(0, len(unique_colors) - 1, n_slots).astype(int)
+        colors = unique_colors[idx]
+    else:
+        colors = unique_colors
+
+    grid = np.zeros(
+        (rows * cell_size, cols * cell_size, 3),
+        dtype=np.uint8
+    )
+
+    for i, color in enumerate(colors):
+        r = i // cols
+        c = i % cols
+        if r >= rows:
+            break
+
+        y0 = r * cell_size
+        y1 = y0 + cell_size
+        x0 = c * cell_size
+        x1 = x0 + cell_size
+
+        grid[y0:y1, x0:x1] = color
+
+    plt.imshow(grid, interpolation="nearest")
+    plt.title(
+        f"{len(unique_colors)} total colors | {len(colors)} colors displayed | {cell_size}×{cell_size}px | {sorting.upper()} sort",
+        fontsize=12
+    )
+    plt.show()
+
 #----------------------------
 # Testing
 #----------------------------
@@ -124,3 +230,4 @@ surface_graphing(smoothed_image)
 '''
 
 #channel_data_3D_plot(image)
+display_image_colors(image, sorting="lab")
