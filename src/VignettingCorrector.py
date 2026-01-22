@@ -12,6 +12,11 @@ image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpe
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 flatfield_path =  filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 
+flatfield = cv2.imread(flatfield_path).astype(np.float32)
+filtered_flatfield = cv2.bilateralFilter(flatfield, d=9, sigmaColor=150, sigmaSpace=75)
+filtered_flatfield = cv2.GaussianBlur(image, (5, 5), 1.4)
+Util.save_image(filtered_flatfield)
+
 #----------------------------
 # Vignetting Correction Function
 #----------------------------
@@ -21,14 +26,17 @@ def vignetting_correction(image_path, flatfield_path):
     image = cv2.imread(image_path).astype(np.float32)
     flatfield = cv2.imread(flatfield_path).astype(np.float32)
 
+    filtered_flatfield = cv2.bilateralFilter(flatfield, d=9, sigmaColor=150, sigmaSpace=75)
+    #filtered_flatfield = cv2.GaussianBlur(image, (5, 5), 1.4)
+
     if image.shape != flatfield.shape:
         raise ValueError("Image and flat-field must have the same dimensions and channels")
 
     # Avoid division by zero by adding a small epsilon
     epsilon = 1e-6
-    flatfield_corrected = image / (flatfield + epsilon)
+    flatfield_corrected = image / (filtered_flatfield + epsilon)
 
-    mean_flatfield = np.mean(flatfield, axis=(0, 1))
+    mean_flatfield = np.mean(filtered_flatfield, axis=(0, 1))
     corrected_image = flatfield_corrected * mean_flatfield
 
     corrected_image = np.clip(corrected_image, 0, 255).astype(np.uint8)

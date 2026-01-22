@@ -21,10 +21,6 @@ image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpe
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-blue_image = image[:, :, 0]
-green_image = image[:, :, 1]
-red_image = image[:, :, 2]
-
 #----------------------------
 # Image Processing
 #----------------------------
@@ -79,20 +75,15 @@ laplacian_abs = cv2.convertScaleAbs(laplacian)
 
 gray = cv2.cvtColor(processed_image_uint8, cv2.COLOR_BGR2GRAY)
 
-# Apply threshold to get binary image
 _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
 
-# Create a kernel
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
 
-# Compute morphological gradient
 gradient = cv2.morphologyEx(binary, cv2.MORPH_GRADIENT, kernel)
 
-# Use blurred image for thresholding
 thresh = cv2.adaptiveThreshold(gradient, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                cv2.THRESH_BINARY_INV, 15, 3)
 
-# Find contours
 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 #print(f"Number of contours found: {len(contours)}")
 

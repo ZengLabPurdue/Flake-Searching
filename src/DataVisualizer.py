@@ -10,13 +10,11 @@ from tkinter import filedialog
 # Load Image
 #----------------------------
 
+'''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-blue_image = image[:, :, 0]
-green_image = image[:, :, 1]
-red_image = image[:, :, 2]
+'''
 
 #----------------------------
 # Image Processing
@@ -114,7 +112,7 @@ def channel_data_3D_plot(image, colorspace="bgr", sample_step=100, point_size=2)
     plt.show()
 
 # Displays provided colors
-def display_colors(rgb_colors, grid_shape):
+def display_colors_small(rgb_colors, grid_shape):
 
     rows, cols = grid_shape
     n = len(rgb_colors)
@@ -144,55 +142,62 @@ def display_colors(rgb_colors, grid_shape):
     plt.show()
 
 # Displays all colors of an image sorted by intensity
-def display_image_colors(image, input_colorspace="bgr", sorting="lab", cell_size=7):
+def display_colors_many(rgb_colors, sorting="lab"):
+    rgb_colors = np.asarray(rgb_colors, dtype=np.uint8)
 
-    if input_colorspace == "bgr":
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    elif input_colorspace == "rgb":
-        rgb = image.copy()
-    else:
-        raise ValueError("input_colorspace must be 'bgr' or 'rgb'")
-
-    pixels = rgb.reshape(-1, 3)
-    unique_colors = np.unique(pixels, axis=0)
+    if rgb_colors.ndim != 2 or rgb_colors.shape[1] != 3:
+        raise ValueError("rgb_colors must have shape (N, 3)")
 
     if sorting == "intensity":
         intensities = (
-            0.2126 * unique_colors[:, 0] +
-            0.7152 * unique_colors[:, 1] +
-            0.0722 * unique_colors[:, 2]
+            0.2126 * rgb_colors[:, 0] +
+            0.7152 * rgb_colors[:, 1] +
+            0.0722 * rgb_colors[:, 2]
         )
         sort_idx = np.argsort(intensities)
 
     elif sorting == "lab":
         lab = cv2.cvtColor(
-            unique_colors.reshape(-1, 1, 3),
+            rgb_colors.reshape(-1, 1, 3),
             cv2.COLOR_RGB2LAB
         ).reshape(-1, 3)
-
         sort_idx = np.lexsort((lab[:, 2], lab[:, 1], lab[:, 0]))
 
-    else:
-        raise ValueError("sorting must be 'intensity' or 'lab'")
+    elif sorting == "hsv":
+        lab = cv2.cvtColor(
+            rgb_colors.reshape(-1, 1, 3),
+            cv2.COLOR_RGB2HSV
+        ).reshape(-1, 3)
+        sort_idx = np.lexsort((lab[:, 0], lab[:, 2], lab[:, 1]))
 
-    unique_colors = unique_colors[sort_idx]
+    else:
+        raise ValueError("sorting must be 'intensity', 'lab', or 'hsv'")
+
+    rgb_colors = rgb_colors[sort_idx]
 
     fig = plt.figure(figsize=(16, 9))
-
     plt.axis("off")
-
     fig.canvas.draw()
+
     width_px, height_px = fig.canvas.get_width_height()
+    N = len(rgb_colors)
+
+    aspect = width_px / height_px
+
+    cols = int(np.ceil(np.sqrt(N * aspect)))
+    rows = int(np.ceil(N / cols))
+
+    cell_size = min(width_px // cols, height_px // rows)
 
     cols = width_px // cell_size
     rows = height_px // cell_size
     n_slots = cols * rows
 
-    if len(unique_colors) > n_slots:
-        idx = np.linspace(0, len(unique_colors) - 1, n_slots).astype(int)
-        colors = unique_colors[idx]
+    if N > n_slots:
+        idx = np.linspace(0, N - 1, n_slots).astype(int)
+        colors = rgb_colors[idx]
     else:
-        colors = unique_colors
+        colors = rgb_colors
 
     grid = np.zeros(
         (rows * cell_size, cols * cell_size, 3),
@@ -205,16 +210,14 @@ def display_image_colors(image, input_colorspace="bgr", sorting="lab", cell_size
         if r >= rows:
             break
 
-        y0 = r * cell_size
-        y1 = y0 + cell_size
-        x0 = c * cell_size
-        x1 = x0 + cell_size
-
+        y0, y1 = r * cell_size, (r + 1) * cell_size
+        x0, x1 = c * cell_size, (c + 1) * cell_size
         grid[y0:y1, x0:x1] = color
 
     plt.imshow(grid, interpolation="nearest")
     plt.title(
-        f"{len(unique_colors)} total colors | {len(colors)} colors displayed | {cell_size}×{cell_size}px | {sorting.upper()} sort",
+        f"{N} colors | {len(colors)} displayed | "
+        f"cell={cell_size}px | {sorting.upper()} sort",
         fontsize=12
     )
     plt.show()
@@ -223,11 +226,17 @@ def display_image_colors(image, input_colorspace="bgr", sorting="lab", cell_size
 # Testing
 #----------------------------
 
+#surface_graphing(gray_image)
+
 '''
 surface_graphing(gray_image)
 surface_graphing(blurred_image)
 surface_graphing(smoothed_image)
 '''
 
-#channel_data_3D_plot(image)
-display_image_colors(image, sorting="lab")
+#channel_data_3D_plot(image, colorspace="bgr")
+
+#rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+#pixels = rgb.reshape(-1, 3)
+#unique_colors = np.unique(pixels)
+#display_colors_many(rgb_colors = unique_colors, sorting="lab")

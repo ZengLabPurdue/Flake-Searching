@@ -10,10 +10,14 @@ from mpl_toolkits.mplot3d import Axes3D
 # Load Image
 #----------------------------
 
+'''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+'''
 
-def find_useable_pixels(image, reference_colors, output_colors=None, output_values=None, use_lab=False):
+def find_nearest_colors(image, reference_colors, output_colors=None, output_values=None, use_lab=False):
+
+    start_time = time.time()
 
     if (output_colors is None) == (output_values is None):
         raise ValueError("Provide exactly one of output_colors or output_values")
@@ -34,6 +38,8 @@ def find_useable_pixels(image, reference_colors, output_colors=None, output_valu
     distances = np.linalg.norm(pixels[:, None, :] - ref_cs[None, :, :], axis=2)
 
     nearest_idx = np.argmin(distances, axis=1)
+
+    print(f"Nearest color scan finished in {time.time() - start_time:.2f}s")
 
     if output_colors is not None:
         out = np.asarray(output_colors, dtype=np.uint8)
@@ -91,7 +97,7 @@ output_values = [
 ]
 
 '''
-result = find_useable_pixels(image, reference_colors, output_values=output_values)
+result = find_nearest_colors(image, reference_colors, output_values=output_values)
 window_sums = scan_windows(result)
 
 ny, nx = window_sums.shape
@@ -111,6 +117,7 @@ plt.show()
 '''
 # Performance Benchmarking
 
+'''
 total_time = 0
 
 totalProgress = 100
@@ -119,9 +126,10 @@ start_time = time.time()
 Util.progress_bar(0, totalProgress, start_time)
 for i in range(100):
     start = time.perf_counter_ns()
-    result = find_useable_pixels(image, reference_colors, output_values=output_values)
-    window_sums = scan_windows(result)
+    result = find_nearest_colors(image, reference_colors, output_values=output_values)
+    #window_sums = scan_windows(result)
     end = time.perf_counter_ns()
     total_time += end-start
     Util.progress_bar(i+1, totalProgress, start_time)
 print(f"Average Time: {int(total_time/100)}ns")
+'''
