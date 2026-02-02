@@ -15,22 +15,23 @@ image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpe
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 '''
 
-def find_nearest_colors(image, reference_colors, output_colors=None, output_values=None, use_lab=False):
+def find_nearest_colors(image_rgb, reference_colors, output_colors=None, output_values=None, use_lab=False):
 
     start_time = time.time()
 
     if (output_colors is None) == (output_values is None):
         raise ValueError("Provide exactly one of output_colors or output_values")
 
-    h, w = image.shape[:2]
+    h, w = image_rgb.shape[:2]
 
     ref = np.asarray(reference_colors, dtype=np.uint8)
 
     if use_lab:
-        image_cs = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+        image_cs = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2LAB).astype(np.float32)
         ref_cs = cv2.cvtColor(ref.reshape(-1, 1, 3), cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float32)
     else:
-        image_cs = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32)
+        #image_cs = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2RGB).astype(np.float32)
+        image_cs = image_rgb
         ref_cs = ref.astype(np.float32)
 
     pixels = image_cs.reshape(-1, 3)
@@ -41,14 +42,17 @@ def find_nearest_colors(image, reference_colors, output_colors=None, output_valu
 
     print(f"Nearest color scan finished in {time.time() - start_time:.2f}s")
 
+    counts = np.bincount(nearest_idx, minlength=len(reference_colors))
+    color_counts = {tuple(ref[i]): int(counts[i]) for i in range(len(reference_colors))}
+
     if output_colors is not None:
         out = np.asarray(output_colors, dtype=np.uint8)
         labeled_pixels = out[nearest_idx]
-        return labeled_pixels.reshape(h, w, 3)
+        return labeled_pixels.reshape(h, w, 3), color_counts
     else:
         out = np.asarray(output_values)
         numeric_pixels = out[nearest_idx]
-        return numeric_pixels.reshape(h, w)
+        return numeric_pixels.reshape(h, w), color_counts
 
 def scan_windows(filtered_image, window_zoom=20):
 

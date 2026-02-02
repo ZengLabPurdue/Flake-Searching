@@ -38,19 +38,27 @@ gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 #----------------------------
 
 # 3D surface graphing
-def surface_graphing(image):
-    Z = image.squeeze()
+def surface_graphing(image1, image2=None, color1="C0", color2="C1", downsample=10):
+    Z1 = image1.squeeze()
 
-    Z_small = Z[::10, ::10]
+    Z1_small = Z1[::downsample, ::downsample]
 
-    x = np.arange(Z_small.shape[1])
-    y = np.arange(Z_small.shape[0])
+    x = np.arange(Z1_small.shape[1])
+    y = np.arange(Z1_small.shape[0])
     X, Y = np.meshgrid(x, y)
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    ax.plot_surface(X, Y, Z_small, linewidth=0, antialiased=False)
+    ax.plot_surface(X, Y, Z1_small, color=color1, alpha=0.6, linewidth=0, antialiased=False)
+
+    if image2 is not None:
+        Z2 = image2.squeeze()
+        Z2_small = Z2[::downsample, ::downsample]
+        ax.plot_surface(X, Y, Z1_small, color=color1, alpha=0.6, linewidth=0, antialiased=False)
+        ax.plot_surface(X, Y, Z2_small, color=color2, alpha=0.6, linewidth=0, antialiased=False)
+    else:
+        ax.plot_surface(X, Y, Z1_small, color=color1, linewidth=0, antialiased=False)
 
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
@@ -112,8 +120,8 @@ def channel_data_3D_plot(image, colorspace="bgr", sample_step=100, point_size=2)
     plt.show()
 
 # Displays provided colors
-def display_colors_small(rgb_colors, grid_shape):
-
+def display_colors_small(rgb_colors, grid_shape, labels=None):
+    
     rows, cols = grid_shape
     n = len(rgb_colors)
 
@@ -121,18 +129,20 @@ def display_colors_small(rgb_colors, grid_shape):
         raise ValueError("Grid shape is too small for the number of colors")
 
     fig, axes = plt.subplots(rows, cols, figsize=(2 * cols, 2 * rows))
-
     axes = np.atleast_2d(axes)
+
+    if labels is None:
+        labels = [f"Cluster {i}" for i in range(n)]
 
     for idx in range(rows * cols):
         r, c = divmod(idx, cols)
         ax = axes[r, c]
 
         if idx < n:
-            color = rgb_colors[idx]
+            color = np.array(rgb_colors[idx], dtype=np.uint8)
             swatch = np.ones((50, 50, 3), dtype=np.uint8) * color
             ax.imshow(swatch)
-            ax.set_title(f"Cluster {idx}")
+            ax.set_title(labels[idx], fontsize=10, pad=2)
         else:
             ax.axis("off")
 
@@ -168,7 +178,7 @@ def display_colors_many(rgb_colors, sorting="lab"):
             rgb_colors.reshape(-1, 1, 3),
             cv2.COLOR_RGB2HSV
         ).reshape(-1, 3)
-        sort_idx = np.lexsort((lab[:, 0], lab[:, 2], lab[:, 1]))
+        sort_idx = np.lexsort((lab[:, 2], lab[:, 1], lab[:, 0]))
 
     else:
         raise ValueError("sorting must be 'intensity', 'lab', or 'hsv'")
@@ -229,14 +239,8 @@ def display_colors_many(rgb_colors, sorting="lab"):
 #surface_graphing(gray_image)
 
 '''
-surface_graphing(gray_image)
-surface_graphing(blurred_image)
-surface_graphing(smoothed_image)
+rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+pixels = rgb.reshape(-1, 3)
+unique_colors = np.unique(pixels, axis=0)
+display_colors_many(rgb_colors=unique_colors, sorting="hsv")
 '''
-
-#channel_data_3D_plot(image, colorspace="bgr")
-
-#rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-#pixels = rgb.reshape(-1, 3)
-#unique_colors = np.unique(pixels)
-#display_colors_many(rgb_colors = unique_colors, sorting="lab")

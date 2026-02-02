@@ -99,7 +99,6 @@ class ColorReaderApp:
         self.current_tool = None
         self.currently_drawing = False
 
-        self.update_line_plot()
         self.hide_line_plot()
         self.create_menu()
 
@@ -164,8 +163,6 @@ class ColorReaderApp:
         
         filemenu = tk.Menu(self.menubar, tearoff=0)
         filemenu.add_command(label="Open Image", command=self.open_image)
-        filemenu.add_command(label="Import", command=self.import_file)
-        filemenu.add_command(label="Export", command=self.export_file)
         self.menubar.add_cascade(label="File", menu=filemenu)
 
         self.channelmenu = tk.Menu(self.menubar, tearoff=0)
@@ -199,12 +196,10 @@ class ColorReaderApp:
         self.hide_linetype_menu()
         self.hide_channel_menu()
         self.hide_averagetype_menu()
-        
-        self.plot_widget.pack_forget()
-        self.placeholder.pack_forget()
 
-        self.color_display_frame.pack_forget()
-        self.average_color_frame.pack_forget()
+        # EXPLICITLY hide ALL right panel widgets
+        for widget in self.right_panel.winfo_children():
+            widget.pack_forget()
 
         if hasattr(self, "right_placeholder"):
             self.right_placeholder.place_forget()
@@ -215,6 +210,7 @@ class ColorReaderApp:
             self.show_channel_menu()
             self.plot_widget.pack(fill=tk.BOTH, expand=True)
             self.update_line_plot()
+            self.plot_resize()
             self.plot_canvas.draw()
         elif tool == "average":
             self.root.title("Color Reader App - Average Color Tool")
@@ -285,101 +281,13 @@ class ColorReaderApp:
         ]
         self.update_line_plot()
 
-    def export_file(self):
-        if len(self.samples) == 0:
-            tk.messagebox.showwarning("Export Data", "No samples to export!")
-            return
-
-        filepath = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        if not filepath:
-            return
-
-        file_path = os.path.abspath(self.file_path)
-
-        scale_x = self.display_image.width / self.image.width
-        scale_y = self.display_image.height / self.image.height
-
-        with open(filepath, mode="w", newline="") as f:
-            writer = csv.writer(f)
-
-            writer.writerow(["File Path", file_path])
-
-            path_str = ";".join(f"{int(x / scale_x)},{int(y / scale_y)}" for x, y in self.path)
-            writer.writerow(["Line Path", path_str])
-            writer.writerow([])
-            
-            writer.writerow(["Intensity", "Red", "Green", "Blue"])
-            for intensity, r, g, b in self.samples:
-                    writer.writerow([
-                        f"{intensity:.2f}",
-                        f"{r:.2f}",
-                        f"{g:.2f}",
-                        f"{b:.2f}"
-                    ])
-
-        tk.messagebox.showinfo("Export", f"Curve exported to {filepath}")
-
-    def import_file(self):
-        path = filedialog.askopenfilename(
-                   filetypes=[("CSV files", "*.csv")],
-                   title="Select CSV file"
-               )
-        if not path:
-            return
-
-        with open(path, newline='') as f:
-            reader = csv.reader(f)
-            rows = list(reader)
-
-            for i, row in enumerate(rows):
-                if row and row[0] == "File Path":
-                    file_path = row[1]
-                elif row and row[0] == "Line Path":
-                    path_str = row[1]
-                    if path_str:
-                        coords = path_str.split(";")
-                        self.path = [tuple(map(float, c.split(","))) for c in coords]
-                elif row and row[0] == "Intensity":
-                    sample_start = i + 1
-                    break
-
-            for row in rows[sample_start:]:
-                if len(row) < 4:
-                    continue
-                intensity, r, g, b = map(float, row[:4])
-                self.samples.append((intensity, r, g, b))
-
-        self.open_image(file_path=file_path)
-
-        scale_x = self.display_image.width / self.image.width
-        scale_y = self.display_image.height / self.image.height
-
-        if self.path:
-            self.path = [(x * scale_x, y * scale_y) for x, y in self.path]
-            flat = []
-            flat = [v for pt in self.path for v in pt]
-            self.current_line = self.canvas.create_line(
-                *flat, fill="red", width=2, smooth=self.curved_mode
-            )
-
-        flat = [v for pt in self.path for v in pt]
-        self.canvas.coords(self.current_line, *flat)
-
-        self.sample_path()
-        self.update_line_plot()
-
-        tk.messagebox.showinfo("Import", f"Imported!")
-
     def set_linetype(self, mode):
         if mode == "curved": 
             self.curved_mode = True 
-            self.root.title("Color Reader App - curved Line Mode")
+            self.root.title("Color Reader App - curved line mode")
         else: 
             self.curved_mode = False 
-            self.root.title("Color Reader App - straight Line Mode")
+            self.root.title("Color Reader App - straight line mode")
 
     def open_image(self, file_path = None):
         if file_path is None:
@@ -408,9 +316,6 @@ class ColorReaderApp:
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
 
-        self.update_line_plot()
-        self.plot_canvas.draw()
-
     def on_canvas_resize(self, event):
 
         if self.image is not None:
@@ -434,9 +339,21 @@ class ColorReaderApp:
                     *flat, fill="red", width=2, smooth=self.curved_mode
                 )
 
-        self.update_line_plot()
-        self.plot_canvas.draw()
-    
+        self.plot_resize()
+
+    def plot_resize(self):
+        width = self.right_panel.winfo_width()
+        height = self.right_panel.winfo_width()
+
+        dpi = self.figure.get_dpi()
+        self.figure.set_size_inches(
+            width / dpi,
+            height / dpi,
+        )
+
+        self.figure.tight_layout()
+        self.plot_canvas.draw_idle()
+
     def on_canvas_click(self, event):
         if getattr(self, "current_tool", None) == "picker":
             self.pick_color(event)
@@ -574,6 +491,7 @@ class ColorReaderApp:
                 self.samples.append((intensity, r, g, b))
 
     def update_line_plot(self):
+
         self.sample_path()
         self.ax.clear()
 
@@ -596,7 +514,7 @@ class ColorReaderApp:
         self.ax.set_xlabel("Distance (pixels)")
         self.ax.set_ylabel("Value")
 
-        self.figure.tight_layout()
+        #self.figure.tight_layout()
         self.plot_canvas.draw()
 
     def hide_line_plot(self):
