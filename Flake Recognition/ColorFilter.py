@@ -184,9 +184,15 @@ colors_bgr = image_bgr_sub.reshape(-1, 3)
 #cluster_colors_bgr = binned_unique_colors
 
 #DataVisualizer.display_colors_many(original_unique_colors, sorting="hsv")
-cluster_colors_bgr = hdbscan_clustering_colors(original_unique_colors, process_color_type="bgr", min_cluster_size=20, min_samples=5)
+#cluster_colors_bgr = hdbscan_clustering_colors(original_unique_colors, process_color_type="bgr", min_cluster_size=20, min_samples=5)
 
-#cluster_colors_bgr = hdbscan_clustering_image(image_bgr, process_color_type="bgr", subsample=10)
+cluster_colors_bgr = hdbscan_clustering_image(image_bgr, process_color_type="bgr", subsample=5)
+
+print(f"Cluster Colors: {len(cluster_colors_bgr)}")
+cluster_colors_rgb = cv2.cvtColor(cluster_colors_bgr.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_BGR2RGB).reshape(-1, 3)
+DataVisualizer.display_colors_many(cluster_colors_rgb, sorting="hsv")
+
+cluster_colors_bgr = hdbscan_clustering_colors(cluster_colors_bgr, process_color_type="bgr", min_cluster_size=2, min_samples=1)
 
 print(f"Cluster Colors: {len(cluster_colors_bgr)}")
 cluster_colors_rgb = cv2.cvtColor(cluster_colors_bgr.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_BGR2RGB).reshape(-1, 3)
