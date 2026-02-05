@@ -59,8 +59,8 @@ class ColorReaderApp:
         self.init_color_picker_tool()
         self.color_display_frame.pack_forget()
 
-        self.init_average_color_tool()
-        self.average_color_frame.pack_forget()
+        self.init_avg_color_tool()
+        self.avg_color_frame.pack_forget()
 
         self.channels = ["intensity","red", "green", "blue"]
 
@@ -95,6 +95,7 @@ class ColorReaderApp:
 
         self.avg_rect = None
         self.avg_start = None
+        self.avg_end = None
 
         self.current_tool = None
         self.currently_drawing = False
@@ -139,24 +140,24 @@ class ColorReaderApp:
 
         self.next_color_index = 0
 
-    def init_average_color_tool(self):
-        self.average_color_frame = tk.Frame(self.right_panel, bg="white")
-        self.average_color_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    def init_avg_color_tool(self):
+        self.avg_color_frame = tk.Frame(self.right_panel, bg="white")
+        self.avg_color_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.average_color_frame.rowconfigure(0, weight=1)
-        self.average_color_frame.columnconfigure(0, weight=1)
+        self.avg_color_frame.rowconfigure(0, weight=1)
+        self.avg_color_frame.columnconfigure(0, weight=1)
 
-        self.average_color_square = tk.Label(
-            self.average_color_frame, bg="white", relief=tk.SUNKEN
+        self.avg_color_square = tk.Label(
+            self.avg_color_frame, bg="white", relief=tk.SUNKEN
         )
-        self.average_color_square.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        self.avg_color_square.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
 
-        self.average_color_label = tk.Label(
-            self.average_color_frame, text="R: - G: - B: -", font=("Arial", 12), bg="white"
+        self.avg_color_label = tk.Label(
+            self.avg_color_frame, text="R: - G: - B: -", font=("Arial", 12), bg="white"
         )
-        self.average_color_label.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        self.avg_color_label.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
 
-        self.average_color_frame.pack_forget()
+        self.avg_color_frame.pack_forget()
 
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
@@ -178,14 +179,14 @@ class ColorReaderApp:
         self.linetypemenu.add_command(label="straight", command=lambda: self.set_linetype("straight"))
         self.linetypemenu.add_command(label="curved", command=lambda: self.set_linetype("curved"))
 
-        self.averagetypemenu = tk.Menu(self.menubar, tearoff=0)
-        self.averagetypemenu.add_command(label="Region", command=lambda: self.set_linetype("region"))
-        self.averagetypemenu.add_command(label="Line", command=lambda: self.set_linetype("line"))
+        self.avgtypemenu = tk.Menu(self.menubar, tearoff=0)
+        self.avgtypemenu.add_command(label="Region", command=lambda: self.set_linetype("region"))
+        self.avgtypemenu.add_command(label="Line", command=lambda: self.set_linetype("line"))
 
         toolmenu = tk.Menu(self.menubar, tearoff=0)
         toolmenu.add_command(label="Color Picker Tool", command=lambda: self.set_tool("picker"))
         toolmenu.add_command(label="Line Tool", command=lambda: self.set_tool("line"))
-        toolmenu.add_command(label="Average Color Tool", command=lambda: self.set_tool("average"))
+        toolmenu.add_command(label="Average Color Tool", command=lambda: self.set_tool("avg"))
         self.menubar.add_cascade(label="Tools", menu=toolmenu)
 
         self.root.config(menu=self.menubar)  
@@ -195,7 +196,7 @@ class ColorReaderApp:
 
         self.hide_linetype_menu()
         self.hide_channel_menu()
-        self.hide_averagetype_menu()
+        self.hide_avgtype_menu()
 
         # EXPLICITLY hide ALL right panel widgets
         for widget in self.right_panel.winfo_children():
@@ -212,10 +213,10 @@ class ColorReaderApp:
             self.update_line_plot()
             self.plot_resize()
             self.plot_canvas.draw()
-        elif tool == "average":
+        elif tool == "avg":
             self.root.title("Color Reader App - Average Color Tool")
-            self.show_averagetype_menu()
-            self.average_color_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            self.show_avgtype_menu()
+            self.avg_color_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         elif tool == "picker":
             self.root.title("Color Reader App - Picker Tool")
             self.color_display_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -256,18 +257,18 @@ class ColorReaderApp:
                     return True
         return False
     
-    def show_averagetype_menu(self):
-        if not self.averagetype_menu_visible():
-            self.menubar.add_cascade(label="Average Type", menu=self.averagetypemenu)
+    def show_avgtype_menu(self):
+        if not self.avgtype_menu_visible():
+            self.menubar.add_cascade(label="Average Type", menu=self.avgtypemenu)
 
-    def hide_averagetype_menu(self):
+    def hide_avgtype_menu(self):
         for i in range(self.menubar.index("end") + 1):
             if self.menubar.type(i) == "cascade":
                 if self.menubar.entrycget(i, "label") == "Average Type":
                     self.menubar.delete(i)
                     break
 
-    def averagetype_menu_visible(self):
+    def avgtype_menu_visible(self):
         for i in range(self.menubar.index("end") + 1):
             if self.menubar.type(i) == "cascade":
                 if self.menubar.entrycget(i, "label") == "Average Type":
@@ -284,10 +285,8 @@ class ColorReaderApp:
     def set_linetype(self, mode):
         if mode == "curved": 
             self.curved_mode = True 
-            self.root.title("Color Reader App - curved line mode")
         else: 
             self.curved_mode = False 
-            self.root.title("Color Reader App - straight line mode")
 
     def open_image(self, file_path = None):
         if file_path is None:
@@ -359,7 +358,7 @@ class ColorReaderApp:
             self.pick_color(event)
         elif getattr(self, "current_tool", None) == "line":
             self.on_mouse_down_line_tool(event)
-        elif getattr(self, "current_tool", None) == "average":
+        elif getattr(self, "current_tool", None) == "avg":
             self.avg_start = (event.x, event.y)
             if self.avg_rect:
                 self.canvas.delete(self.avg_rect)
@@ -368,14 +367,14 @@ class ColorReaderApp:
     def on_mouse_drag(self, event):
         if getattr(self, "current_tool", None) == "line":
             self.on_mouse_drag_line_tool(event)
-        elif getattr(self, "current_tool", None) == "average":
-            self.on_mouse_drag_average_tool(event)
+        elif getattr(self, "current_tool", None) == "avg":
+            self.on_mouse_drag_avg_tool(event)
 
     def on_mouse_up(self, event):
         if getattr(self, "current_tool", None) == "line":
             self.on_mouse_up_line_tool(event)
-        elif getattr(self, "current_tool", None) == "average":
-            self.on_mouse_up_average_tool(event)
+        elif getattr(self, "current_tool", None) == "avg":
+            self.on_mouse_up_avg_tool(event)
 
     def on_mouse_down_line_tool(self, event):
 
@@ -410,30 +409,25 @@ class ColorReaderApp:
         self.currently_drawing = False
         self.update_line_plot()
 
-    def on_mouse_drag_average_tool(self, event):
+    def on_mouse_drag_avg_tool(self, event):
         if self.image is None: return
 
         if self.avg_rect:
             self.canvas.delete(self.avg_rect)
-
-        x0, y0 = self.avg_start
-        x1, y1 = event.x, event.y
         
-        self.avg_rect = self.canvas.create_rectangle(x0, y0, x1, y1, outline="red", width=2)
+        self.avg_end = (event.x, event.y)
+        
+        self.avg_rect = self.canvas.create_rectangle(self.avg_start[0], self.avg_start[1], self.avg_end[0], self.avg_end[1], outline="red", width=2)
 
-    def on_mouse_up_average_tool(self, event):
+    def on_mouse_up_avg_tool(self, event):
         if self.image is None or self.avg_start is None: return
-
-        x0, y0 = self.avg_start
-        x1, y1 = event.x, event.y
-        self.avg_start = None
 
         scale_x = self.display_image.width / self.image.width
         scale_y = self.display_image.height / self.image.height
-        img_x0 = max(0, min(self.image.width - 1, int(x0 / scale_x)))
-        img_y0 = max(0, min(self.image.height - 1, int(y0 / scale_y)))
-        img_x1 = max(0, min(self.image.width - 1, int(x1 / scale_x)))
-        img_y1 = max(0, min(self.image.height - 1, int(y1 / scale_y)))
+        img_x0 = max(0, min(self.image.width - 1, int(self.avg_start[0] / scale_x)))
+        img_y0 = max(0, min(self.image.height - 1, int(self.avg_start[1] / scale_y)))
+        img_x1 = max(0, min(self.image.width - 1, int(self.avg_end[0] / scale_x)))
+        img_y1 = max(0, min(self.image.height - 1, int(self.avg_end[1] / scale_y)))
 
         x_start, x_end = sorted([img_x0, img_x1])
         y_start, y_end = sorted([img_y0, img_y1])
@@ -446,12 +440,8 @@ class ColorReaderApp:
         b_avg = int(np.mean(region[:,:,2]))
 
         hex_color = f"#{r_avg:02x}{g_avg:02x}{b_avg:02x}"
-        self.average_color_square.config(bg=hex_color)
-        self.average_color_label.config(text=f"R: {r_avg} G: {g_avg} B: {b_avg}")
-
-        if self.avg_rect:
-            self.canvas.delete(self.avg_rect)
-            self.avg_rect = None
+        self.avg_color_square.config(bg=hex_color)
+        self.avg_color_label.config(text=f"R: {r_avg} G: {g_avg} B: {b_avg}")
 
     def sample_path(self):
         if self.image is None or len(self.path) < 2:
@@ -540,7 +530,7 @@ class ColorReaderApp:
 
         self.next_color_index = (self.next_color_index + 1) % len(self.color_squares)
 
-    def average_color(self, event):
+    def avg_color(self, event):
         if self.image is None:
             return
 
