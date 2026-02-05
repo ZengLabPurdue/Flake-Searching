@@ -91,7 +91,8 @@ class ColorReaderApp:
         
         self.path = []
         self.samples = []
-        self.curved_mode = False
+        self.line_curved_mode = False
+        self.avg_line_mode = False
 
         self.avg_rect = None
         self.avg_start = None
@@ -162,9 +163,10 @@ class ColorReaderApp:
     def create_menu(self):
         self.menubar = tk.Menu(self.root)
         
-        filemenu = tk.Menu(self.menubar, tearoff=0)
-        filemenu.add_command(label="Open Image", command=self.open_image)
-        self.menubar.add_cascade(label="File", menu=filemenu)
+        file_menu = tk.Menu(self.menubar, tearoff=0)
+        file_menu.add_command(label="Open Image", command=self.open_image)
+        file_menu.add_command(label="Exit", command=root.quit)
+        self.menubar.add_cascade(label="File", menu=file_menu)
 
         self.channelmenu = tk.Menu(self.menubar, tearoff=0)
 
@@ -176,17 +178,20 @@ class ColorReaderApp:
             )
 
         self.linetypemenu = tk.Menu(self.menubar, tearoff=0)
-        self.linetypemenu.add_command(label="straight", command=lambda: self.set_linetype("straight"))
-        self.linetypemenu.add_command(label="curved", command=lambda: self.set_linetype("curved"))
+        self.linetypemenu.add_command(label="Straight", command=lambda: self.set_line_type("s"))
+        self.linetypemenu.add_command(label="Curved", command=lambda: self.set_line_type("c"))
 
         self.avgtypemenu = tk.Menu(self.menubar, tearoff=0)
-        self.avgtypemenu.add_command(label="Region", command=lambda: self.set_linetype("region"))
-        self.avgtypemenu.add_command(label="Line", command=lambda: self.set_linetype("line"))
+        self.avgtypemenu.add_command(label="Region", command=lambda: self.set_avg_type("r"))
+        line_menu = tk.Menu(self.avgtypemenu, tearoff=0)
+        line_menu.add_command(label="Curved", command=lambda: self.set_avg_type("lc"))
+        line_menu.add_command(label="Straight", command=lambda: self.set_avg_type("ls"))
+        self.avgtypemenu.add_cascade(label="Line", menu=line_menu)
 
         toolmenu = tk.Menu(self.menubar, tearoff=0)
-        toolmenu.add_command(label="Color Picker Tool", command=lambda: self.set_tool("picker"))
-        toolmenu.add_command(label="Line Tool", command=lambda: self.set_tool("line"))
-        toolmenu.add_command(label="Average Color Tool", command=lambda: self.set_tool("avg"))
+        toolmenu.add_command(label="Color Picker Tool", command=lambda: self.set_tool("p"))
+        toolmenu.add_command(label="Line Tool", command=lambda: self.set_tool("l"))
+        toolmenu.add_command(label="Average Color Tool", command=lambda: self.set_tool("a"))
         self.menubar.add_cascade(label="Tools", menu=toolmenu)
 
         self.root.config(menu=self.menubar)  
@@ -205,7 +210,7 @@ class ColorReaderApp:
         if hasattr(self, "right_placeholder"):
             self.right_placeholder.place_forget()
 
-        if tool == "line":
+        if tool == "l":
             self.root.title("Color Reader App - Line Tool")
             self.show_linetype_menu()
             self.show_channel_menu()
@@ -213,11 +218,11 @@ class ColorReaderApp:
             self.update_line_plot()
             self.plot_resize()
             self.plot_canvas.draw()
-        elif tool == "avg":
+        elif tool == "a":
             self.root.title("Color Reader App - Average Color Tool")
             self.show_avgtype_menu()
             self.avg_color_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        elif tool == "picker":
+        elif tool == "p":
             self.root.title("Color Reader App - Picker Tool")
             self.color_display_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
@@ -282,11 +287,17 @@ class ColorReaderApp:
         ]
         self.update_line_plot()
 
-    def set_linetype(self, mode):
-        if mode == "curved": 
-            self.curved_mode = True 
+    def set_line_type(self, mode):
+        if mode == "c": 
+            self.line_curved_mode = True 
         else: 
-            self.curved_mode = False 
+            self.line_curved_mode = False 
+
+    def set_avg_type(self, mode):
+        if mode[0] == "l":
+            self.avg_line_mode = mode[1]
+        else:
+            self.avg_line_mode = None
 
     def open_image(self, file_path = None):
         if file_path is None:
@@ -335,7 +346,7 @@ class ColorReaderApp:
                 flat = []
                 flat = [v for pt in self.path for v in pt]
                 self.current_line = self.canvas.create_line(
-                    *flat, fill="red", width=2, smooth=self.curved_mode
+                    *flat, fill="red", width=2, smooth=self.line_curved_mode
                 )
 
         self.plot_resize()
@@ -359,10 +370,7 @@ class ColorReaderApp:
         elif getattr(self, "current_tool", None) == "line":
             self.on_mouse_down_line_tool(event)
         elif getattr(self, "current_tool", None) == "avg":
-            self.avg_start = (event.x, event.y)
-            if self.avg_rect:
-                self.canvas.delete(self.avg_rect)
-                self.avg_rect = None
+            self.on_mouse_down_avg_tool(event)
 
     def on_mouse_drag(self, event):
         if getattr(self, "current_tool", None) == "line":
@@ -388,13 +396,13 @@ class ColorReaderApp:
         self.path = [(event.x, event.y)]
         self.current_line = self.canvas.create_line(
             event.x, event.y, event.x, event.y,
-            fill="red", width=2, smooth=self.curved_mode
+            fill="red", width=2, smooth=self.line_curved_mode
         )
 
     def on_mouse_drag_line_tool(self, event):
         if self.image is None: return
         
-        if self.curved_mode:
+        if self.line_curved_mode:
             self.path.append((event.x, event.y))
         else:
             self.path = [self.path[0], (event.x, event.y)]
@@ -409,39 +417,54 @@ class ColorReaderApp:
         self.currently_drawing = False
         self.update_line_plot()
 
+    def on_mouse_down_avg_tool(self, event):
+        if self.avg_line_mode:
+            pass
+        else:
+            self.avg_start = (event.x, event.y)
+            if self.avg_rect:
+                self.canvas.delete(self.avg_rect)
+                self.avg_rect = None
+
     def on_mouse_drag_avg_tool(self, event):
         if self.image is None: return
 
-        if self.avg_rect:
-            self.canvas.delete(self.avg_rect)
+        if self.avg_line_mode:
+            pass
+        else:
+            if self.avg_rect:
+                self.canvas.delete(self.avg_rect)
         
-        self.avg_end = (event.x, event.y)
+            self.avg_end = (event.x, event.y)
         
-        self.avg_rect = self.canvas.create_rectangle(self.avg_start[0], self.avg_start[1], self.avg_end[0], self.avg_end[1], outline="red", width=2)
+            self.avg_rect = self.canvas.create_rectangle(self.avg_start[0], self.avg_start[1], self.avg_end[0], self.avg_end[1], outline="red", width=2)
 
     def on_mouse_up_avg_tool(self, event):
-        if self.image is None or self.avg_start is None: return
+        if self.image is None: return
 
-        scale_x = self.display_image.width / self.image.width
-        scale_y = self.display_image.height / self.image.height
-        img_x0 = max(0, min(self.image.width - 1, int(self.avg_start[0] / scale_x)))
-        img_y0 = max(0, min(self.image.height - 1, int(self.avg_start[1] / scale_y)))
-        img_x1 = max(0, min(self.image.width - 1, int(self.avg_end[0] / scale_x)))
-        img_y1 = max(0, min(self.image.height - 1, int(self.avg_end[1] / scale_y)))
+        if self.avg_line_mode:
+            pass
+        else:
+            scale_x = self.display_image.width / self.image.width
+            scale_y = self.display_image.height / self.image.height
+            img_x0 = max(0, min(self.image.width - 1, int(self.avg_start[0] / scale_x)))
+            img_y0 = max(0, min(self.image.height - 1, int(self.avg_start[1] / scale_y)))
+            img_x1 = max(0, min(self.image.width - 1, int(self.avg_end[0] / scale_x)))
+            img_y1 = max(0, min(self.image.height - 1, int(self.avg_end[1] / scale_y)))
 
-        x_start, x_end = sorted([img_x0, img_x1])
-        y_start, y_end = sorted([img_y0, img_y1])
+            x_start, x_end = sorted([img_x0, img_x1])
+            y_start, y_end = sorted([img_y0, img_y1])
 
-        region = np.array(self.image.crop((x_start, y_start, x_end+1, y_end+1)))
-        if region.size == 0:
-            return
-        r_avg = int(np.mean(region[:,:,0]))
-        g_avg = int(np.mean(region[:,:,1]))
-        b_avg = int(np.mean(region[:,:,2]))
+            region = np.array(self.image.crop((x_start, y_start, x_end+1, y_end+1)))
+            if region.size == 0:
+                return
+            r_avg = int(np.mean(region[:,:,0]))
+            g_avg = int(np.mean(region[:,:,1]))
+            b_avg = int(np.mean(region[:,:,2]))
 
-        hex_color = f"#{r_avg:02x}{g_avg:02x}{b_avg:02x}"
-        self.avg_color_square.config(bg=hex_color)
-        self.avg_color_label.config(text=f"R: {r_avg} G: {g_avg} B: {b_avg}")
+            hex_color = f"#{r_avg:02x}{g_avg:02x}{b_avg:02x}"
+            self.avg_color_square.config(bg=hex_color)
+            self.avg_color_label.config(text=f"R: {r_avg} G: {g_avg} B: {b_avg}")
 
     def sample_path(self):
         if self.image is None or len(self.path) < 2:
