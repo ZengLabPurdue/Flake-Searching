@@ -197,13 +197,20 @@ class ColorReaderApp:
         self.root.config(menu=self.menubar)  
 
     def set_tool(self, tool):
+        if tool == self.current_tool: return
+
         self.current_tool = tool
+
+        if self.current_line:
+            self.canvas.delete(self.current_line)
+
+        if self.avg_rect:
+            self.canvas.delete(self.avg_rect)
 
         self.hide_linetype_menu()
         self.hide_channel_menu()
         self.hide_avgtype_menu()
 
-        # EXPLICITLY hide ALL right panel widgets
         for widget in self.right_panel.winfo_children():
             widget.pack_forget()
 
@@ -365,28 +372,29 @@ class ColorReaderApp:
         self.plot_canvas.draw_idle()
 
     def on_canvas_click(self, event):
-        if getattr(self, "current_tool", None) == "picker":
+        if getattr(self, "current_tool", None) == "p":
             self.pick_color(event)
-        elif getattr(self, "current_tool", None) == "line":
+        elif getattr(self, "current_tool", None) == "l":
+            print("Yay!")
             self.on_mouse_down_line_tool(event)
-        elif getattr(self, "current_tool", None) == "avg":
+        elif getattr(self, "current_tool", None) == "a":
             self.on_mouse_down_avg_tool(event)
 
     def on_mouse_drag(self, event):
-        if getattr(self, "current_tool", None) == "line":
+        if getattr(self, "current_tool", None) == "l":
             self.on_mouse_drag_line_tool(event)
-        elif getattr(self, "current_tool", None) == "avg":
+        elif getattr(self, "current_tool", None) == "a":
             self.on_mouse_drag_avg_tool(event)
 
     def on_mouse_up(self, event):
-        if getattr(self, "current_tool", None) == "line":
+        if getattr(self, "current_tool", None) == "l":
             self.on_mouse_up_line_tool(event)
-        elif getattr(self, "current_tool", None) == "avg":
+        elif getattr(self, "current_tool", None) == "a":
             self.on_mouse_up_avg_tool(event)
 
     def on_mouse_down_line_tool(self, event):
 
-        if self.image is None or self.current_tool != "line": return
+        if self.image is None or self.current_tool != "l": return
 
         self.currently_drawing = True
 
@@ -413,7 +421,7 @@ class ColorReaderApp:
         self.update_line_plot()
 
     def on_mouse_up_line_tool(self, event):
-        if self.image is None or self.current_tool != "line": return
+        if self.image is None or self.current_tool != "l": return
         self.currently_drawing = False
         self.update_line_plot()
 
