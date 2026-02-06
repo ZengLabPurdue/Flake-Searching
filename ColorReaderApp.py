@@ -375,7 +375,6 @@ class ColorReaderApp:
         if getattr(self, "current_tool", None) == "p":
             self.pick_color(event)
         elif getattr(self, "current_tool", None) == "l":
-            print("Yay!")
             self.on_mouse_down_line_tool(event)
         elif getattr(self, "current_tool", None) == "a":
             self.on_mouse_down_avg_tool(event)
