@@ -8,7 +8,7 @@ import hdbscan
 # from scipy.spatial.distance import cdist
 
 import util
-import DataVisualizer
+from data_visualizer import DataVisualizer
 import InitialPassFilter
 import time
 

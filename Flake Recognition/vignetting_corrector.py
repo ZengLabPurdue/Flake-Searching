@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from tkinter import filedialog
-import DataVisualizer
+from data_visualizer import DataVisualizer
 import util
 import matplotlib.pyplot as plt
 
