@@ -7,7 +7,7 @@ import scipy.ndimage as ndi
 import hdbscan
 # from scipy.spatial.distance import cdist
 
-import Util
+import util
 import DataVisualizer
 import InitialPassFilter
 import time

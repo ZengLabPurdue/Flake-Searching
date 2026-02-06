@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from tkinter import filedialog
 import DataVisualizer
-import Util
+import util
 import matplotlib.pyplot as plt
 
 #----------------------------
@@ -165,4 +165,4 @@ plt.tight_layout()
 
 corrected_image_gray = cv2.cvtColor(corrected_image, cv2.COLOR_RGB2GRAY)
 DataVisualizer.surface_graphing(corrected_image_gray)
-Util.save_image(corrected_image)
+util.save_image(corrected_image)

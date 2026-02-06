@@ -32,6 +32,9 @@ def QImageToCvMat(incomingImage):
 def runRegistration(currImgArray, prevImgArray):
     # do registration stuff
     # grayscale+float conversions
+
+    print(currImgArray.shape)
+
     gray1 = np.float32(cv2.cvtColor(currImgArray, cv2.COLOR_BGR2GRAY))
     gray2 = np.float32(cv2.cvtColor(prevImgArray, cv2.COLOR_BGR2GRAY))
 
