@@ -3,12 +3,13 @@ import sys
 import cv2
 import numpy as np
 from tkinter import *
+from tkinter import ttk
+import tkinter.font as tkFont
 from PIL import Image, ImageTk
 import amcam
 from prior import prior
 
 
-STEP_SIZE = 5
 DLL_PATH = os.getcwd() + r"\Motor Control\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
 
@@ -51,7 +52,9 @@ class App:
         self.img_label = Label(self.main_frame, bg="black")
         self.img_label.pack(fill=BOTH, expand=True)
 
-        self.init_manual_control_panel()
+        self.step_size = 5
+
+        self.init_manual_control_button_panel()
 
         self.hcam = None
         self.buf = None
@@ -61,13 +64,13 @@ class App:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def init_manual_control_panel(self):
+    def init_manual_control_button_panel(self):
 
         self.manual_control_border = Frame(
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=104
+            height=184
         )
         self.manual_control_border.place(relx=1.0, rely=0.0, anchor="ne", y=-2)
 
@@ -75,44 +78,89 @@ class App:
             self.manual_control_border,
             bg="white",
             width=200,
-            height=102
+            height=182
         )
         self.manual_control_panel.place(x=2, y=0)
 
-        self.manual_control_panel.pack_propagate(False)
+        title_label = Label(
+            self.manual_control_border,
+            text="Manual Control",
+            bg="white",
+            fg="black",
+            font=("Calibri", 15, "bold")
+        )
+        title_label.place(relx=0.5, y=10, anchor="n")
 
-        controls = Frame(self.manual_control_panel, bg="white")
-        controls.pack()
+        step_label = Label(
+            self.manual_control_border,
+            text="Step Size (µm):",
+            bg="white",
+            fg="black"
+        )
+        step_label.place(relx=0.0, rely=0.0, x=80, y=45, anchor="n")
 
-        btn_up = Button(controls, text="▲", width=5, height=2, command=self.move_up)
-        btn_down = Button(controls, text="▼", width=5, height=2, command=self.move_down)
-        btn_left = Button(controls, text="◀", width=5, height=2, command=self.move_left)
-        btn_right = Button(controls, text="▶", width=5, height=2, command=self.move_right)
+        self.step_size_var = StringVar(value=str(self.step_size))  # bind to current step size
+        self.step_entry = ttk.Entry(
+            self.manual_control_border,
+            textvariable=self.step_size_var,
+            width=5
+        )
+        self.step_entry.bind("<Return>", self.on_enter_step_size)
+        self.step_entry.place(relx=0.0, rely=0.0, x=150, y=45, anchor="n")
 
-        btn_up.grid(row=0, column=1)
-        btn_left.grid(row=1, column=0)
-        btn_right.grid(row=1, column=2)
-        btn_down.grid(row=1, column=1)
+        self.manual_control_button_panel = Frame(
+            self.manual_control_border,
+            bg="white",
+            width=120, 
+            height=90 
+        )
+        self.manual_control_button_panel.place(relx=0.5, x=0, y=80, anchor="n")
+        self.manual_control_button_panel.pack_propagate(False)
+
+        style = ttk.Style()
+        style.configure("Arrow.TButton", font=("Segoe UI", 12, "bold"), padding=5)
+
+        controls = Frame(self.manual_control_button_panel, bg="white")
+        controls.pack(expand=True, fill="both")
+
+        self.btn_up = ttk.Button(controls, text="▲", style="Arrow.TButton", command=self.move_up)
+        self.btn_down = ttk.Button(controls, text="▼", style="Arrow.TButton", command=self.move_down)
+        self.btn_left = ttk.Button(controls, text="◀", style="Arrow.TButton", command=self.move_left)
+        self.btn_right = ttk.Button(controls, text="▶", style="Arrow.TButton", command=self.move_right)
+
+        for r in [0, 1]:
+            controls.rowconfigure(r, weight=1)
+        for c in [0, 1, 2]:
+            controls.columnconfigure(c, weight=1)
+
+        self.btn_up.grid(row=0, column=1, sticky="nsew")
+        self.btn_left.grid(row=1, column=0, sticky="nsew")
+        self.btn_right.grid(row=1, column=2, sticky="nsew")
+        self.btn_down.grid(row=1, column=1, sticky="nsew")
 
     def move_up(self):
         global y_pos
-        y_pos -= STEP_SIZE
+        y_pos -= self.step_size
         pr.go_to_pos(x_pos, y_pos)
 
     def move_down(self):
         global y_pos
-        y_pos += STEP_SIZE
+        y_pos += self.step_size
         pr.go_to_pos(x_pos, y_pos)
 
     def move_left(self):
         global x_pos
-        x_pos -= STEP_SIZE
+        x_pos -= self.step_size
         pr.go_to_pos(x_pos, y_pos)
 
     def move_right(self):
         global x_pos
-        x_pos += STEP_SIZE
+        x_pos += self.step_size
         pr.go_to_pos(x_pos, y_pos)
+    
+    def on_enter_step_size(self, event=None):
+        print(self.step_size)
+        self.step_size = int(self.step_entry.get())
 
     @staticmethod
     def cameraCallback(nEvent, ctx):

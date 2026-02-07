@@ -1,57 +1,51 @@
 import os
 import subprocess
-import sys
-from tkinter import *
-from tkinter import ttk
 from pathlib import Path
+from tkinter import Tk, StringVar
+from tkinter import ttk
 
 homedir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(homedir)
 
 def on_close():
-    file = open("port.config", "w")
-    
-    pr_args_final = 0 if pr_args.get() == "" else pr_args.get()
+    pr_args_final = pr_args.get() or "0"
 
-    file.write(f"{pr_args_final}\n")
-    file.close()
+    with open("port.config", "w") as f:
+        f.write(f"{pr_args_final}\n")
 
     root.destroy()
-
-    homedir = os.path.dirname(os.path.abspath(__file__))
-    #motor_control_dir = Path(homedir) / "Motor Control"
-    #os.chdir(motor_control_dir)
 
     python_exe = Path(homedir) / ".venv" / "Scripts" / "python.exe"
     script = Path(homedir) / "simple_stage_controller.py"
 
-    cmd = [
-        str(python_exe),
-        str(script),
-        str(pr_args_final),
-    ]
-
+    cmd = [str(python_exe), str(script), str(pr_args_final)]
     subprocess.run(cmd, check=True)
 
-file = open("port.config", "r")
+try:
+    with open("port.config", "r") as f:
+        pr_args_value = f.readline().strip()
+except FileNotFoundError:
+    pr_args_value = ""
 
 root = Tk()
-root.title("Setup")
-Prior_Label = Label(root, text="Prior COM Port:")
+root.title("Launch")
+root.resizable(False, False)
 
-pr_args = StringVar(value=file.readline()[:-1])
+frame = ttk.Frame(root, padding=15)
+frame.grid(row=0, column=0)
 
-Pr_Textbox = Entry(root, textvariable=pr_args)
+prior_label = ttk.Label(frame, text="Prior COM Port:")
+prior_label.grid(row=0, column=0, padx=(0,10), pady=(0,10), sticky="e")
 
-file.close()
+pr_args = StringVar(value=pr_args_value)
+pr_entry = ttk.Entry(frame, textvariable=pr_args, width=10)
+pr_entry.grid(row=0, column=1, pady=(0,10), sticky="w")
+pr_entry.focus()
 
-Confirm_Button = Button(root, text="Confirm Setting", command=on_close)
+confirm_btn = ttk.Button(frame, text="Launch", command=on_close)
+confirm_btn.grid(row=1, column=0, columnspan=2, pady=(5,0))
 
-Prior_Label.grid(column=0, row=1, sticky="nsew")
-
-Pr_Textbox.grid(column=1, row=1, sticky="nsew")
-
-Confirm_Button.grid(column=0, row=3, columnspan=2)
+root.bind("<Return>", lambda e: on_close())
 
 root.protocol("WM_DELETE_WINDOW", on_close)
 
