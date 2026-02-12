@@ -7,6 +7,8 @@ from tkinter import ttk
 homedir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(homedir)
 
+# Hello roommate
+
 def on_close():
     pr_args_final = pr_args.get() or "0"
 

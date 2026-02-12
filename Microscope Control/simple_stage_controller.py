@@ -87,7 +87,7 @@ class App:
             text="Manual Control",
             bg="white",
             fg="black",
-            font=("Calibri", 15, "bold")
+            font=("TkDefaultFont", 15, "bold")
         )
         title_label.place(relx=0.5, y=10, anchor="n")
 
@@ -118,7 +118,9 @@ class App:
         self.manual_control_button_panel.pack_propagate(False)
 
         style = ttk.Style()
-        style.configure("Arrow.TButton", font=("Segoe UI", 12, "bold"), padding=5)
+        style.configure("Arrow.TButton", font=("Ariel", 12, "bold"), padding=5)
+        style.configure("Arrow.TButton", background="white")
+        style.configure("Arrow.TButton", relief="flat")
 
         controls = Frame(self.manual_control_button_panel, bg="white")
         controls.pack(expand=True, fill="both")
@@ -175,11 +177,9 @@ class App:
                 self.height, self.width, 3
             )
 
-            # Run registration on full image
             runRegistration(img, self.prevImg)
             self.prevImg = img
 
-            # Convert for Tk
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(img_rgb)
             img_tk = ImageTk.PhotoImage(img_pil)

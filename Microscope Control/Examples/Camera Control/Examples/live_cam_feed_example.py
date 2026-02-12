@@ -1,4 +1,16 @@
-import sys, amcam
+import sys
+import os
+from pathlib import Path
+
+home_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(home_dir) 
+camera_api_path = Path(parent_dir) / "Camera API"
+
+print(os.listdir(camera_api_path))
+
+sys.path.insert(0, str(camera_api_path))
+import amcam
+
 from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtWidgets import QLabel, QApplication, QWidget, QDesktopWidget, QCheckBox, QMessageBox
@@ -80,8 +92,15 @@ class MainWin(QWidget):
 
     def closeEvent(self, event):
         if self.hcam is not None:
+            try:
+                # Stop the background pull thread first
+                self.hcam.Stop()
+            except amcam.HRESULTException as ex:
+                print(f"Failed to stop pull mode, hr=0x{ex.hr:x}")
+            # Now close the camera
             self.hcam.Close()
             self.hcam = None
+        event.accept()  # let the window close
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
