@@ -89,8 +89,8 @@ class ColorReaderApp:
         self.prev_image_dim = None
         self.current_line = None
         
-        self.path = []
-        self.samples = []
+        self.line = []
+        self.line_pixels = []
         self.line_curved_mode = False
         self.avg_line_mode = False
 
@@ -99,7 +99,6 @@ class ColorReaderApp:
         self.avg_end = None
 
         self.current_tool = None
-        self.currently_drawing = False
 
         self.hide_line_plot()
         self.create_menu()
@@ -184,8 +183,8 @@ class ColorReaderApp:
         self.avgtypemenu = tk.Menu(self.menubar, tearoff=0)
         self.avgtypemenu.add_command(label="Region", command=lambda: self.set_avg_type("r"))
         line_menu = tk.Menu(self.avgtypemenu, tearoff=0)
-        line_menu.add_command(label="Curved", command=lambda: self.set_avg_type("lc"))
         line_menu.add_command(label="Straight", command=lambda: self.set_avg_type("ls"))
+        line_menu.add_command(label="Curved", command=lambda: self.set_avg_type("lc"))
         self.avgtypemenu.add_cascade(label="Line", menu=line_menu)
 
         toolmenu = tk.Menu(self.menubar, tearoff=0)
@@ -302,7 +301,11 @@ class ColorReaderApp:
 
     def set_avg_type(self, mode):
         if mode[0] == "l":
-            self.avg_line_mode = mode[1]
+            self.avg_line_mode = True
+            if mode[1] == "c":
+                self.line_curved_mode = True
+            else:
+                self.line_curved_mode = False
         else:
             self.avg_line_mode = None
 
@@ -348,10 +351,10 @@ class ColorReaderApp:
             scale_x = self.display_image.width / self.prev_image_dim[0]
             scale_y = self.display_image.height / self.prev_image_dim[1]
 
-            if self.current_line and self.path:
-                self.path = [(x * scale_x, y * scale_y) for x, y in self.path]
+            if self.current_line and self.line:
+                self.line = [(x * scale_x, y * scale_y) for x, y in self.line]
                 flat = []
-                flat = [v for pt in self.path for v in pt]
+                flat = [v for pt in self.line for v in pt]
                 self.current_line = self.canvas.create_line(
                     *flat, fill="red", width=2, smooth=self.line_curved_mode
                 )
@@ -373,119 +376,125 @@ class ColorReaderApp:
 
     def on_canvas_click(self, event):
         if getattr(self, "current_tool", None) == "p":
-            self.pick_color(event)
+            if self.image is None:
+                return
+
+            scale_x = self.display_image.width / self.image.width
+            scale_y = self.display_image.height / self.image.height
+            img_x = int(event.x / scale_x)
+            img_y = int(event.y / scale_y)
+
+            r, g, b = self.image.getpixel((img_x, img_y))
+
+            square = self.color_squares[self.next_color_index]
+            label = self.color_labels[self.next_color_index]
+
+            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+            square.config(bg=hex_color)
+            label.config(text=f"R: {r} G: {g} B: {b}")
+
+            self.next_color_index = (self.next_color_index + 1) % len(self.color_squares)
         elif getattr(self, "current_tool", None) == "l":
-            self.on_mouse_down_line_tool(event)
+            if self.image is None: return
+            self.create_line(event)
         elif getattr(self, "current_tool", None) == "a":
-            self.on_mouse_down_avg_tool(event)
+            if self.avg_line_mode:
+                self.create_line(event)
+            else:
+                self.avg_start = (event.x, event.y)
+                if self.avg_rect:
+                    self.canvas.delete(self.avg_rect)
+                    self.avg_rect = None
 
     def on_mouse_drag(self, event):
         if getattr(self, "current_tool", None) == "l":
-            self.on_mouse_drag_line_tool(event)
+            if self.image is None: return
+            self.draw_line(event)
+            self.update_line_plot()
         elif getattr(self, "current_tool", None) == "a":
-            self.on_mouse_drag_avg_tool(event)
+            if self.image is None: return
+
+            if self.avg_rect:
+                self.canvas.delete(self.avg_rect)
+
+            if self.avg_line_mode:
+                self.draw_line(event)
+            else:
+                self.avg_end = (event.x, event.y)
+
+                self.avg_rect = self.canvas.create_rectangle(self.avg_start[0], self.avg_start[1], self.avg_end[0], self.avg_end[1], outline="red", width=2)
 
     def on_mouse_up(self, event):
         if getattr(self, "current_tool", None) == "l":
-            self.on_mouse_up_line_tool(event)
+            if self.image is None: return
+            self.update_line_plot()
         elif getattr(self, "current_tool", None) == "a":
-            self.on_mouse_up_avg_tool(event)
+            if self.image is None: return
 
-    def on_mouse_down_line_tool(self, event):
+            if self.avg_line_mode:
 
-        if self.image is None or self.current_tool != "l": return
+                self.sample_line()
 
-        self.currently_drawing = True
+                line_pixels_array = np.array(self.line_pixels)
 
-        if self.current_line:
-            self.canvas.delete(self.current_line)
+                if (line_pixels_array.ndim == 1): return
 
-        self.path = [(event.x, event.y)]
-        self.current_line = self.canvas.create_line(
-            event.x, event.y, event.x, event.y,
-            fill="red", width=2, smooth=self.line_curved_mode
-        )
+                r_avg = int(np.mean(line_pixels_array[:, 0]))
+                g_avg = int(np.mean(line_pixels_array[:, 1]))
+                b_avg = int(np.mean(line_pixels_array[:, 2]))
+            else:
+                if self.avg_rect is None: return
 
-    def on_mouse_drag_line_tool(self, event):
-        if self.image is None: return
-        
-        if self.line_curved_mode:
-            self.path.append((event.x, event.y))
-        else:
-            self.path = [self.path[0], (event.x, event.y)]
+                scale_x = self.display_image.width / self.image.width
+                scale_y = self.display_image.height / self.image.height
+                img_x0 = max(0, min(self.image.width - 1, int(self.avg_start[0] / scale_x)))
+                img_y0 = max(0, min(self.image.height - 1, int(self.avg_start[1] / scale_y)))
+                img_x1 = max(0, min(self.image.width - 1, int(self.avg_end[0] / scale_x)))
+                img_y1 = max(0, min(self.image.height - 1, int(self.avg_end[1] / scale_y)))
 
-        flat = [v for pt in self.path for v in pt]
-        self.canvas.coords(self.current_line, *flat)
+                x_start, x_end = sorted([img_x0, img_x1])
+                y_start, y_end = sorted([img_y0, img_y1])
 
-        self.update_line_plot()
-
-    def on_mouse_up_line_tool(self, event):
-        if self.image is None or self.current_tool != "l": return
-        self.currently_drawing = False
-        self.update_line_plot()
-
-    def on_mouse_down_avg_tool(self, event):
-        if self.avg_line_mode:
-            pass
-        else:
-            self.avg_start = (event.x, event.y)
-            if self.avg_rect:
-                self.canvas.delete(self.avg_rect)
-                self.avg_rect = None
-
-    def on_mouse_drag_avg_tool(self, event):
-        if self.image is None: return
-
-        if self.avg_line_mode:
-            pass
-        else:
-            if self.avg_rect:
-                self.canvas.delete(self.avg_rect)
-        
-            self.avg_end = (event.x, event.y)
-        
-            self.avg_rect = self.canvas.create_rectangle(self.avg_start[0], self.avg_start[1], self.avg_end[0], self.avg_end[1], outline="red", width=2)
-
-    def on_mouse_up_avg_tool(self, event):
-        if self.image is None: return
-
-        if self.avg_line_mode:
-            pass
-        else:
-            scale_x = self.display_image.width / self.image.width
-            scale_y = self.display_image.height / self.image.height
-            img_x0 = max(0, min(self.image.width - 1, int(self.avg_start[0] / scale_x)))
-            img_y0 = max(0, min(self.image.height - 1, int(self.avg_start[1] / scale_y)))
-            img_x1 = max(0, min(self.image.width - 1, int(self.avg_end[0] / scale_x)))
-            img_y1 = max(0, min(self.image.height - 1, int(self.avg_end[1] / scale_y)))
-
-            x_start, x_end = sorted([img_x0, img_x1])
-            y_start, y_end = sorted([img_y0, img_y1])
-
-            region = np.array(self.image.crop((x_start, y_start, x_end+1, y_end+1)))
-            if region.size == 0:
-                return
-            r_avg = int(np.mean(region[:,:,0]))
-            g_avg = int(np.mean(region[:,:,1]))
-            b_avg = int(np.mean(region[:,:,2]))
+                region = np.array(self.image.crop((x_start, y_start, x_end+1, y_end+1)))
+                if region.size == 0:
+                    return
+                r_avg = int(np.mean(region[:,:,0]))
+                g_avg = int(np.mean(region[:,:,1]))
+                b_avg = int(np.mean(region[:,:,2]))
 
             hex_color = f"#{r_avg:02x}{g_avg:02x}{b_avg:02x}"
             self.avg_color_square.config(bg=hex_color)
             self.avg_color_label.config(text=f"R: {r_avg} G: {g_avg} B: {b_avg}")
 
-    def sample_path(self):
-        if self.image is None or len(self.path) < 2:
+    def create_line(self, event):
+        if self.current_line:
+                self.canvas.delete(self.current_line)
+
+        self.line = [(event.x, event.y)]
+        self.current_line = self.canvas.create_line(event.x, event.y, event.x, event.y, fill="red", width=2, smooth=self.line_curved_mode)
+
+    def draw_line(self, event):
+        if self.line_curved_mode:
+            self.line.append((event.x, event.y))
+        else:
+            self.line = [self.line[0], (event.x, event.y)]
+
+        flat = [v for pt in self.line for v in pt]
+        self.canvas.coords(self.current_line, *flat)    
+
+    def sample_line(self):
+        if self.image is None or len(self.line) < 2:
             return np.array([])
 
         pixels = np.array(self.image)
-        self.samples = []
+        self.line_pixels = []
 
         scale_x = self.display_image.width / self.image.width
         scale_y = self.display_image.height / self.image.height
 
-        for i in range(len(self.path) - 1):
-            x1d, y1d = self.path[i]
-            x2d, y2d = self.path[i + 1]
+        for i in range(len(self.line) - 1):
+            x1d, y1d = self.line[i]
+            x2d, y2d = self.line[i + 1]
 
             x1 = int(x1d / scale_x)
             y1 = int(y1d / scale_y)
@@ -508,25 +517,25 @@ class ColorReaderApp:
             rgb = pixels[ys[mask], xs[mask]]
             for r, g, b in rgb:
                 intensity = (int(r) + int(g) + int(b)) / 3
-                self.samples.append((intensity, r, g, b))
+                self.line_pixels.append((r, g, b, intensity))
 
     def update_line_plot(self):
 
-        self.sample_path()
+        self.sample_line()
         self.ax.clear()
 
-        if len(self.samples) > 0:
-            intensity, r, g, b = zip(*self.samples)
-            x = np.arange(len(self.samples))
+        if len(self.line_pixels) > 0:
+            r, g, b, intensity = zip(*self.line_pixels)
+            x = np.arange(len(self.line_pixels))
 
-            if "intensity" in self.channels:
-                self.ax.plot(x, intensity, color="black", label="Intensity")
             if "red" in self.channels:
                 self.ax.plot(x, r, color="red", label="Red")
             if "green" in self.channels:
                 self.ax.plot(x, g, color="green", label="Green")
             if "blue" in self.channels:
                 self.ax.plot(x, b, color="blue", label="Blue")
+            if "intensity" in self.channels:
+                self.ax.plot(x, intensity, color="black", label="Intensity")
 
             self.ax.legend()
 
@@ -534,51 +543,10 @@ class ColorReaderApp:
         self.ax.set_xlabel("Distance (pixels)")
         self.ax.set_ylabel("Value")
 
-        #self.figure.tight_layout()
         self.plot_canvas.draw()
 
     def hide_line_plot(self):
         self.plot_widget.pack_forget()
-
-    def pick_color(self, event):
-        if self.image is None:
-            return
-
-        scale_x = self.display_image.width / self.image.width
-        scale_y = self.display_image.height / self.image.height
-        img_x = int(event.x / scale_x)
-        img_y = int(event.y / scale_y)
-
-        r, g, b = self.image.getpixel((img_x, img_y))
-
-        square = self.color_squares[self.next_color_index]
-        label = self.color_labels[self.next_color_index]
-
-        hex_color = f"#{r:02x}{g:02x}{b:02x}"
-        square.config(bg=hex_color)
-        label.config(text=f"R: {r} G: {g} B: {b}")
-
-        self.next_color_index = (self.next_color_index + 1) % len(self.color_squares)
-
-    def avg_color(self, event):
-        if self.image is None:
-            return
-
-        scale_x = self.display_image.width / self.image.width
-        scale_y = self.display_image.height / self.image.height
-        img_x = int(event.x / scale_x)
-        img_y = int(event.y / scale_y)
-
-        r, g, b = self.image.getpixel((img_x, img_y))
-
-        square = self.color_squares[self.next_color_index]
-        label = self.color_labels[self.next_color_index]
-
-        hex_color = f"#{r:02x}{g:02x}{b:02x}"
-        square.config(bg=hex_color)
-        label.config(text=f"R: {r} G: {g} B: {b}")
-
-        self.next_color_index = (self.next_color_index + 1) % len(self.color_squares)
 
 if __name__ == "__main__":
     root = tk.Tk()
