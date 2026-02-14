@@ -8,9 +8,9 @@ import tkinter.font as tkFont
 from PIL import Image, ImageTk
 import amcam
 from prior import prior
+from datetime import datetime
 
-
-DLL_PATH = os.getcwd() + r"\Motor Control\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
+DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
 
 try:
@@ -22,18 +22,6 @@ try:
 except Exception as e:
     print("Failed to connect to Prior:", e)
     sys.exit(1)
-
-def runRegistration(currImgArray, prevImgArray):
-    if prevImgArray is None:
-        return 0, 0
-    gray1 = np.float32(cv2.cvtColor(currImgArray, cv2.COLOR_BGR2GRAY))
-    gray2 = np.float32(cv2.cvtColor(prevImgArray, cv2.COLOR_BGR2GRAY))
-    (dx, dy), _ = cv2.phaseCorrelate(gray1, gray2)
-    height, width = currImgArray.shape[:2]
-    num_pixels_x = dx * width
-    num_pixels_y = dy * height
-    print(f"Pixels mapped: X={num_pixels_x}, Y={num_pixels_y}")
-    return num_pixels_x, num_pixels_y
 
 class App:
     def __init__(self, root):
@@ -55,6 +43,7 @@ class App:
         self.step_size = 5
 
         self.init_manual_control_button_panel()
+        self.init_capture_image_panel()
 
         self.hcam = None
         self.buf = None
@@ -87,7 +76,7 @@ class App:
             text="Manual Control",
             bg="white",
             fg="black",
-            font=("TkDefaultFont", 15, "bold")
+            font=("TkDefaultFont", 13)
         )
         title_label.place(relx=0.5, y=10, anchor="n")
 
@@ -118,17 +107,17 @@ class App:
         self.manual_control_button_panel.pack_propagate(False)
 
         style = ttk.Style()
-        style.configure("Arrow.TButton", font=("Ariel", 12, "bold"), padding=5)
+        style.configure("Arrow.TButton", font=("TkDefaultFont", 15), padding=5)
         style.configure("Arrow.TButton", background="white")
         style.configure("Arrow.TButton", relief="flat")
 
         controls = Frame(self.manual_control_button_panel, bg="white")
         controls.pack(expand=True, fill="both")
 
-        self.btn_up = ttk.Button(controls, text="▲", style="Arrow.TButton", command=self.move_up)
-        self.btn_down = ttk.Button(controls, text="▼", style="Arrow.TButton", command=self.move_down)
-        self.btn_left = ttk.Button(controls, text="◀", style="Arrow.TButton", command=self.move_left)
-        self.btn_right = ttk.Button(controls, text="▶", style="Arrow.TButton", command=self.move_right)
+        self.btn_up = ttk.Button(controls, text="▴", style="Arrow.TButton", command=self.move_up)
+        self.btn_down = ttk.Button(controls, text="▾", style="Arrow.TButton", command=self.move_down)
+        self.btn_left = ttk.Button(controls, text="◂", style="Arrow.TButton", command=self.move_left)
+        self.btn_right = ttk.Button(controls, text="▸", style="Arrow.TButton", command=self.move_right)
 
         for r in [0, 1]:
             controls.rowconfigure(r, weight=1)
@@ -139,6 +128,45 @@ class App:
         self.btn_left.grid(row=1, column=0, sticky="nsew")
         self.btn_right.grid(row=1, column=2, sticky="nsew")
         self.btn_down.grid(row=1, column=1, sticky="nsew")
+
+    def init_capture_image_panel(self):
+
+        self.capture_panel_border = Frame(
+            self.main_frame,
+            bg="#f0f0f0",
+            width=204,
+            height=80
+        )
+        self.capture_panel_border.place(relx=1.0, rely=0.0, anchor="ne", y=182)
+
+        self.capture_panel = Frame(
+            self.capture_panel_border,
+            bg="white",
+            width=200,
+            height=78
+        )
+        self.capture_panel.place(x=2, y=0)
+
+        capture_title = Label(
+            self.capture_panel_border,
+            text="Image Capture",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 13)
+        )
+        capture_title.place(relx=0.5, y=5, anchor="n")
+
+        style = ttk.Style()
+        style.configure("Save.TButton", background="white")
+        style.configure("Save.TButton", relief="flat")
+
+        self.capture_button = ttk.Button(
+            self.capture_panel,
+            text="Capture & Save",
+            style="Save.TButton",
+            command=self.capture_image
+        )
+        self.capture_button.place(relx=0.5, y=50, anchor="center")
 
     def move_up(self):
         global y_pos
@@ -173,12 +201,14 @@ class App:
         try:
             self.hcam.PullImageV2(self.buf, 24, None)
 
+            row_bytes = ((self.width * 24 + 31) // 32 * 4)
             img = np.frombuffer(self.buf, dtype=np.uint8).reshape(
-                self.height, self.width, 3
+                self.height, row_bytes
             )
+            img = img[:, :self.width * 3]
+            img = img.reshape(self.height, self.width, 3)
 
-            runRegistration(img, self.prevImg)
-            self.prevImg = img
+            self.current_frame = img.copy()
 
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(img_rgb)
@@ -202,6 +232,22 @@ class App:
         self.buf = bytes(bufsize)
 
         self.hcam.StartPullModeWithCallback(self.cameraCallback, self)
+
+    def capture_image(self):
+        if not hasattr(self, "current_frame") or self.current_frame is None:
+            print("No frame available to save.")
+            return
+
+        save_dir = "captured_images"
+        os.makedirs(save_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"image_{timestamp}.png"
+        filepath = os.path.join(save_dir, filename)
+
+        cv2.imwrite(filepath, self.current_frame)
+
+        print(f"Image saved to {filepath}")
 
     def on_close(self):
         self.hcam = None
