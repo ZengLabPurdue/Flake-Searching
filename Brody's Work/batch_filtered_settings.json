@@ -1,14 +1,17 @@
 {
   "edge_method": "canny_only",
+  "edge_methods": [
+    "canny_only"
+  ],
   "preprocessing": "full",
-  "blur_sigma": 0.1,
+  "blur_sigma": 0.3021276595744681,
   "canny_low": 0,
   "canny_high": 50,
   "min_area": 100,
-  "edge_threshold": 30,
+  "edge_threshold": 50,
   "min_area_contour": 995,
-  "bridge_gap_factor": 0.05,
-  "force_close_factor": 0.4276595744680851,
+  "bridge_gap_factor": 0.08510638297872342,
+  "force_close_factor": 0.41914893617021276,
   "line_thickness": 5,
   "close_kernel_divisor": 62,
   "morph_margin": 0,

@@ -4,9 +4,9 @@ Single-frame pipeline for microscope handoff.
 
 Takes one image (file path or numpy array) and returns exactly two things:
   1. Full-frame mask overlay (from batch_robust_contours_and_masks) — original image with
-     shapes masked (background visible, shapes blacked out)
+     shapes masked (background visible, shapes blacked out). Uses robust_contours_settings.json.
   2. Contours (from batch_filtered_sensitive_overlays_2x2) — raw contour list from edge
-     detection and contour drawing. Uses batch_filtered_settings.json for params.
+     detection and contour drawing. Uses batch_filtered_settings.json for params. np.ndarray with dtype=object, shape (n_contours,), where each element is a contour array with shape (N, 1, 2).
 
 Usage:
     from single_frame_pipeline import process_frame
@@ -27,7 +27,7 @@ import numpy as np
 from PIL import Image
 
 from batch_filtered_sensitive_overlays_2x2 import load_filtered_overlay_params
-from batch_robust_contours_and_masks import process_image_with_masks
+from batch_robust_contours_and_masks import load_contour_params, process_image_with_masks
 from pipeline import ContourPipeline
 
 
@@ -56,6 +56,7 @@ def process_frame(
     Returns:
         Tuple of:
           - mask_overlay: HxWx3 image from batch_robust_contours_and_masks (shapes blacked out).
+            Uses robust_contours_settings.json (same as full pipeline masked_background_only).
           - contours: np.ndarray (dtype=object) of contour arrays (each Nx1x2) from
             batch_filtered_sensitive_overlays_2x2 (ContourPipeline). Raw contours, not drawn.
     """
@@ -76,8 +77,12 @@ def process_frame(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Mask overlay from batch_robust_contours_and_masks (background masking)
+        # Uses robust_contours_settings.json + no_gap_close to match robust_contours_and_masks_no_gap_close/
+        robust_params = load_contour_params()
         with suppress:
-            ok = process_image_with_masks(img_path, output_dir)
+            ok = process_image_with_masks(
+                img_path, output_dir, params=robust_params, no_gap_close=True
+            )
         if not ok:
             mask_overlay = img.copy()
         else:
