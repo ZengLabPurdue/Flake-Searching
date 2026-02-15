@@ -9,7 +9,7 @@ import hdbscan
 
 import util
 from data_visualizer import DataVisualizer
-import InitialPassFilter
+import init_pass_filter
 import time
 
 #----------------------------
@@ -212,7 +212,7 @@ for color in cluster_colors_rgb:
     else:
         reference_colors.append([0,0,0])
         
-cleaned_image_rgb, color_counts = InitialPassFilter.find_nearest_colors(image_rgb, cluster_colors_rgb, cluster_colors_rgb, use_lab=False)
+cleaned_image_rgb, color_counts = init_pass_filter.find_nearest_colors(image_rgb, cluster_colors_rgb, cluster_colors_rgb, use_lab=False)
 plt.imshow(cleaned_image_rgb)
 plt.title("Cleaned Image")
 plt.axis("off")
