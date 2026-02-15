@@ -1,0 +1,17 @@
+{
+  "edge_method": "canny_only",
+  "preprocessing": "full",
+  "blur_sigma": 0.1,
+  "canny_low": 0,
+  "canny_high": 50,
+  "min_area": 100,
+  "edge_threshold": 30,
+  "min_area_contour": 995,
+  "bridge_gap_factor": 0.05,
+  "force_close_factor": 0.4276595744680851,
+  "line_thickness": 5,
+  "close_kernel_divisor": 62,
+  "morph_margin": 0,
+  "corner_radius": 0,
+  "binning": true
+}

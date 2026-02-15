@@ -1,0 +1,13 @@
+{
+  "blur_sigma": 0.1,
+  "canny_low": 0,
+  "canny_high": 50,
+  "use_h_channel": true,
+  "bridge_gap_factor": 0.05,
+  "force_close_factor": 0.4,
+  "line_thickness": 5,
+  "close_kernel_divisor": 150,
+  "morph_margin": 30,
+  "corner_radius": 8,
+  "binning": true
+}
