@@ -6,10 +6,23 @@ Extract individual flakes from microscope images: raw images → contour detecti
 
 ---
 
+## Modular Pipeline (`pipeline/`)
+
+The `pipeline/` module provides interchangeable components (preprocessors, edge detectors) with a registry pattern. Use `ContourPipeline` for programmatic access:
+
+```python
+from pipeline import ContourPipeline
+result = pipeline.run(img, params)
+```
+
+See `pipeline/README.md` for adding custom preprocessors and edge detectors.
+
+---
+
 ## Folder Structure
 
 ```
-20x_extraction/
+Brody's Work/
 ├── images/
 │   ├── x20_images/              # Original 20x microscope images (input)
 │   └── filtered_sensitive_overlays/  # Step 1 output (created by pipeline)
@@ -21,6 +34,7 @@ Extract individual flakes from microscope images: raw images → contour detecti
 ├── flake_extraction_pipeline.py
 ├── batch_filtered_tuner_ui.py
 ├── contour_tuner_ui.py
+├── pipeline/                  # Modular pipeline (ContourPipeline, registries)
 ├── batch_filtered_settings.json
 ├── robust_contours_settings.json
 ├── requirements.txt
@@ -72,10 +86,10 @@ RAW IMAGES (images/x20_images/)
 
 ## How to Run
 
-Run from inside the `20x_extraction` folder (or from repo root with the path):
+Run from inside the `Brody's Work` folder:
 
 ```bash
-cd 20x_extraction
+cd "Brody's Work"
 python run_flake_extraction.py
 ```
 

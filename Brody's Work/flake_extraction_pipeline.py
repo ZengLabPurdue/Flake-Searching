@@ -266,7 +266,10 @@ def process_image(input_path: Path, output_dir: Path, apply_hsv_filter: bool = T
                 masked_flake = np.zeros_like(crop)
                 masked_flake[flake_mask > 127] = crop[flake_mask > 127]
                 Image.fromarray(masked_flake).save(flake_dir / "masked.png")
-                Image.fromarray(flake_mask).save(flake_dir / "mask.png")
+                # mask.png: flake region = black, background = original crop pixels
+                mask_img = crop.copy()
+                mask_img[flake_mask > 127] = 0
+                Image.fromarray(mask_img).save(flake_dir / "mask.png")
 
                 swatch = np.tile(dominant, (30, 30, 1)).astype(np.uint8)
                 Image.fromarray(swatch).save(flake_dir / "color.png")

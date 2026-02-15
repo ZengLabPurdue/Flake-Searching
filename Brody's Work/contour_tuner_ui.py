@@ -131,6 +131,24 @@ def _gray_from_edge_result(results: list, take_max: bool = True) -> np.ndarray:
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def _compute_edges_combined(work: np.ndarray, preprocessed: np.ndarray, params: dict) -> np.ndarray:
+    """Compute edge map, combining multiple methods if edge_methods list is set.
+    If edge_methods has 2+ methods, computes each and takes pixel-wise maximum (OR).
+    Otherwise uses single edge_method. Returns uint8 0-255."""
+    methods = params.get("edge_methods")
+    if methods and isinstance(methods, (list, tuple)) and len(methods) > 0:
+        combined = None
+        for m in methods:
+            p = dict(params)
+            p["edge_method"] = m
+            p.pop("edge_methods", None)
+            edges = _compute_edges_by_method(work, preprocessed, p)
+            e32 = edges.astype(np.float32)
+            combined = np.maximum(combined, e32) if combined is not None else e32
+        return np.clip(combined, 0, 255).astype(np.uint8)
+    return _compute_edges_by_method(work, preprocessed, params)
+
+
 def _compute_edges_by_method(work: np.ndarray, preprocessed: np.ndarray, params: dict) -> np.ndarray:
     """Compute edge map using selected method. Returns uint8 0-255."""
     method = params.get("edge_method", "canny_h")
@@ -278,118 +296,28 @@ def _compute_edge_comparison(work: np.ndarray, preprocessed: np.ndarray, params:
 
 
 def run_pipeline(img: np.ndarray, params: dict) -> dict:
-    """Run contour pipeline with given params. Returns dict with overlay, edges, masked_bg, etc."""
-    orig = img.copy()
-    if orig.ndim == 2:
-        orig = np.stack([orig, orig, orig], axis=-1)
-    if orig.shape[2] == 4:
-        orig = orig[:, :, :3]
-    orig_h, orig_w = orig.shape[:2]
+    """Run contour pipeline with given params. Returns dict with overlay, edges, masked_bg, etc.
+    Uses ContourPipeline for the main flow; adds edge_comparison for UI."""
+    from pipeline import ContourPipeline
 
-    use_binning = params.get("binning", True)
-    if use_binning:
-        work = bin_image_by_2(orig)
-        bin_h, bin_w = work.shape[:2]
-        if work.dtype != np.uint8:
-            work = np.clip(work, 0, 255).astype(np.uint8)
-        scale_x, scale_y = orig_w / bin_w, orig_h / bin_h
-    else:
-        work = np.clip(orig, 0, 255).astype(np.uint8) if orig.dtype != np.uint8 else orig.copy()
-        bin_h, bin_w = orig_h, orig_w
-        scale_x, scale_y = 1.0, 1.0
-
-    preproc = params.get("preprocessing", "full")
-    if preproc == "none":
-        preprocessed = work
-    elif preproc == "clahe":
-        preprocessed = clahe(work)
-    else:
-        preprocessed = clahe_then_nlmeans(work)
-    edges = _compute_edges_by_method(work, preprocessed, params)
-    binary = _ensure_binary(edges).copy()
-    diag = int(np.hypot(bin_h, bin_w))
-    bridge_factor = params.get("bridge_gap_factor", 0.15)
-    force_factor = params.get("force_close_factor", 0.3)
-    adaptive_bridge = max(50, int(diag * bridge_factor))
-    adaptive_force = max(100, int(diag * force_factor))
-    line_thick = params.get("line_thickness", 4)
-
-    close_div = params.get("close_kernel_divisor", 100)
-    ksize = max(3, int(min(bin_h, bin_w) / close_div))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    binary = smart_connect_endpoints_bridged(binary, max_gap=adaptive_bridge, line_thickness=line_thick, direction_weight=2.0, extend_pixels=2)
-    binary = force_close_open_chains(binary, line_thickness=line_thick, max_iterations=200, max_gap=adaptive_force)
-
-    remaining = _find_endpoints(binary)
-    if remaining:
-        h, w = binary.shape
-        rad = min(adaptive_force * 2, max(h, w))
-        for y1, x1 in remaining:
-            best_d, best_p = float("inf"), None
-            for py in range(max(0, y1 - rad), min(h, y1 + int(rad) + 1)):
-                for px in range(max(0, x1 - rad), min(w, x1 + int(rad) + 1)):
-                    if binary[py, px] < 127 or (py == y1 and px == x1):
-                        continue
-                    d = np.hypot(py - y1, px - x1)
-                    if 0.5 < d < best_d:
-                        best_d, best_p = d, (py, px)
-            if best_p:
-                cv2.line(binary, (x1, y1), (best_p[1], best_p[0]), 255, line_thick)
-
-    morph_margin = params.get("morph_margin", 15)
-    corner_rad = params.get("corner_radius", 2)
-    binary = morph_extend_to_border(binary, bin_h, bin_w, margin=morph_margin, corner_radius=corner_rad)
-
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    all_c = []
-    for c in contours:
-        if len(c) > 0:
-            first, last = c[0][0], c[-1][0]
-            if not np.array_equal(first, last):
-                c = np.vstack([c, c[0:1]])
-            all_c.append(c)
-    all_c = filter_nested_contours(all_c)
-
-    if use_binning:
-        scaled = []
-        for c in all_c:
-            sc = c.copy().astype(np.float32)
-            sc[:, 0, 0] *= scale_y
-            sc[:, 0, 1] *= scale_x
-            scaled.append(sc.astype(np.int32))
-        # Optional min area filter (used by batch_filtered 2x2 tuner)
-        min_area_contour = params.get("min_area_contour", 0)
-        if min_area_contour > 0:
-            scaled = [c for c in scaled if cv2.contourArea(c) >= min_area_contour]
-    else:
-        scaled = all_c
-
-    # Build outputs
-    overlay = orig.copy()
-    lt = max(2, int(min(orig_w, orig_h) / 500))
-    if scaled:
-        cv2.drawContours(overlay, scaled, -1, (0, 255, 0), lt)
-
-    shape_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-    if scaled:
-        cv2.fillPoly(shape_mask, scaled, 255)
-
-    masked_bg = orig.copy()
-    for ch in range(3):
-        masked_bg[:, :, ch] = np.where(shape_mask > 127, 0, orig[:, :, ch])
+    pipeline = ContourPipeline()
+    result = pipeline.run(img, params, return_edges=True, return_binary=False)
+    work = result["work"]
+    preprocessed = result["preprocessed"]
 
     edge_comparison = _compute_edge_comparison(work, preprocessed, params)
+    mask = result["mask_shapes"]
+    mask_3ch = np.stack([mask, mask, mask], axis=-1) if mask.ndim == 2 else mask
 
     return {
-        "original": orig,
-        "edges": np.stack([edges, edges, edges], axis=-1) if edges.ndim == 2 else edges,
-        "overlay": overlay,
-        "mask_shapes": np.stack([shape_mask, shape_mask, shape_mask], axis=-1),
-        "masked_background": masked_bg,
+        "original": result["original"],
+        "edges": result["edges"],
+        "overlay": result["overlay"],
+        "mask_shapes": mask_3ch,
+        "masked_background": result["masked_background"],
         "edge_comparison": edge_comparison,
-        "n_contours": len(scaled),
-        "n_edges_px": int(np.sum(edges > 127)),
+        "n_contours": result["n_contours"],
+        "n_edges_px": result["n_edges_px"],
     }
 
 

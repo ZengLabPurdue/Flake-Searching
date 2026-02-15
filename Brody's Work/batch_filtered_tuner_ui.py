@@ -111,15 +111,22 @@ class BatchFilteredTunerApp:
             return var
 
         ttk.Label(params_frame, text="Edge detection", font=("", 11, "bold")).pack(anchor=tk.W, pady=(0, 4))
-        ttk.Label(params_frame, text="Method").pack(anchor=tk.W)
-        self._edge_display_to_key = {m[1]: m[0] for m in EDGE_METHODS}
-        self.edge_method_var = tk.StringVar(value=EDGE_METHODS[0][1])
-        edge_combo = ttk.Combobox(
-            params_frame, textvariable=self.edge_method_var, state="readonly",
-            values=[m[1] for m in EDGE_METHODS], width=22
-        )
-        edge_combo.pack(fill=tk.X, pady=2)
-        self.params["edge_method_var"] = self.edge_method_var
+        ttk.Label(params_frame, text="Methods (combine with OR):", font=("", 9)).pack(anchor=tk.W)
+        self._edge_check_vars = {}  # method_key -> BooleanVar
+        edge_frame = ttk.Frame(params_frame)
+        edge_frame.pack(fill=tk.BOTH, expand=True, pady=2)
+        edge_inner = ttk.Frame(edge_frame)
+        edge_inner.pack(fill=tk.X)
+        for method_key, display_name, _ in EDGE_METHODS:
+            var = tk.BooleanVar(value=(method_key == "canny_h"))
+            self._edge_check_vars[method_key] = var
+            def on_check(*a):
+                self._schedule_update()
+                self._rebuild_method_options()
+            cb = ttk.Checkbutton(edge_inner, text=display_name, variable=var, command=on_check)
+            cb.pack(anchor=tk.W, padx=(0, 4))
+            var.trace_add("write", on_check)
+        self.params["_edge_checks"] = self._edge_check_vars
         make_slider(params_frame, "Blur sigma", "blur_sigma", 0.1, 2.0, 0.6)
         make_slider(params_frame, "Canny low", "canny_low", 0, 100, 10, "%d")
         make_slider(params_frame, "Canny high", "canny_high", 50, 200, 50, "%d")
@@ -141,11 +148,10 @@ class BatchFilteredTunerApp:
             "None": "none",
         }
 
-        ttk.Label(params_frame, text="Method-specific", font=("", 11, "bold")).pack(anchor=tk.W, pady=(12, 4))
+        ttk.Label(params_frame, text="Method-specific (first checked)", font=("", 11, "bold")).pack(anchor=tk.W, pady=(12, 4))
         self.method_options_frame = ttk.Frame(params_frame)
         self.method_options_frame.pack(fill=tk.X, pady=(0, 8))
         self._method_option_vars = {}
-        edge_combo.bind("<<ComboboxSelected>>", lambda e: (self._rebuild_method_options(), self._schedule_update()))
         self._rebuild_method_options()
 
         ttk.Label(params_frame, text="Gap closing", font=("", 11, "bold")).pack(anchor=tk.W, pady=(12, 4))
@@ -185,12 +191,18 @@ class BatchFilteredTunerApp:
         self.status_var = tk.StringVar(value="Load an image to start (settings for batch_filtered_sensitive_overlays_2x2)")
         ttk.Label(main, textvariable=self.status_var).pack(anchor=tk.W, pady=4)
 
+    def _get_first_checked_method(self) -> str:
+        """Return the first checked edge method key, or canny_h if none."""
+        for method_key, _display, _ in EDGE_METHODS:
+            if self._edge_check_vars.get(method_key, tk.BooleanVar(value=False)).get():
+                return method_key
+        return "canny_h"
+
     def _rebuild_method_options(self):
         for w in self.method_options_frame.winfo_children():
             w.destroy()
         self._method_option_vars.clear()
-        display = self.edge_method_var.get()
-        method = self._edge_display_to_key.get(display, "canny_h")
+        method = self._get_first_checked_method()
         opts = METHOD_OPTIONS.get(method, [])
         if not opts:
             ttk.Label(self.method_options_frame, text="(no options)", font=("", 9), foreground="gray").pack(anchor=tk.W)
@@ -224,11 +236,16 @@ class BatchFilteredTunerApp:
     def _load_defaults(self):
         loaded = load_filtered_overlay_params()
         p = self.params
-        em = loaded.get("edge_method", "canny_h")
-        display = next((m[1] for m in EDGE_METHODS if m[0] == em), EDGE_METHODS[0][1])
-        self.edge_method_var.set(display)
+        edge_methods = loaded.get("edge_methods")
+        if edge_methods and isinstance(edge_methods, (list, tuple)):
+            for method_key in self._edge_check_vars:
+                self._edge_check_vars[method_key].set(method_key in edge_methods)
+        else:
+            em = loaded.get("edge_method", "canny_h")
+            for method_key in self._edge_check_vars:
+                self._edge_check_vars[method_key].set(method_key == em)
         self._rebuild_method_options()
-        opts = METHOD_OPTIONS.get(em, [])
+        opts = METHOD_OPTIONS.get(self._get_first_checked_method(), [])
         for param_key, _lbl, _lo, _hi, default, _fmt in opts:
             if param_key in p:
                 p[param_key].set(loaded.get(param_key, default))
@@ -285,12 +302,13 @@ class BatchFilteredTunerApp:
 
     def _get_params_dict(self) -> dict:
         p = self.params
-        display = p.get("edge_method_var", self.edge_method_var).get()
-        edge_method = self._edge_display_to_key.get(display, "canny_h")
+        checked = [k for k in self._edge_check_vars if self._edge_check_vars[k].get()]
+        edge_methods = checked if checked else ["canny_h"]
         preproc_display = self.preprocessing_var.get()
         preproc = self._preproc_display_to_key.get(preproc_display, "full")
         out = {
-            "edge_method": edge_method,
+            "edge_method": edge_methods[0],
+            "edge_methods": edge_methods,
             "preprocessing": preproc,
             "blur_sigma": p["blur_sigma"].get(),
             "canny_low": int(p["canny_low"].get()),
