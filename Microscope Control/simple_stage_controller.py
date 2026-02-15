@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 import amcam
 from prior import prior
 from datetime import datetime
+from PIL import Image
 
 DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
@@ -200,23 +201,32 @@ class App:
     def on_image(self):
         try:
             self.hcam.PullImageV2(self.buf, 24, None)
-
+    
             row_bytes = ((self.width * 24 + 31) // 32 * 4)
-            img = np.frombuffer(self.buf, dtype=np.uint8).reshape(
-                self.height, row_bytes
-            )
-            img = img[:, :self.width * 3]
-            img = img.reshape(self.height, self.width, 3)
-
+            img = np.frombuffer(self.buf, dtype=np.uint8).reshape(self.height, row_bytes)
+            img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
             self.current_frame = img.copy()
-
+    
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(img_rgb)
-            img_tk = ImageTk.PhotoImage(img_pil)
-
+    
+            # Use label size (matches window size) for scaling
+            lbl_w = self.img_label.winfo_width() or self.width
+            lbl_h = self.img_label.winfo_height() or self.height
+    
+            img_pil_copy = img_pil.copy()
+            img_pil_copy.thumbnail((lbl_w, lbl_h), Image.Resampling.LANCZOS)
+    
+            # Center the image in the label
+            display_img = Image.new("RGB", (lbl_w, lbl_h), (0, 0, 0))
+            x_offset = (lbl_w - img_pil_copy.width) // 2
+            y_offset = (lbl_h - img_pil_copy.height) // 2
+            display_img.paste(img_pil_copy, (x_offset, y_offset))
+    
+            img_tk = ImageTk.PhotoImage(display_img)
             self.img_label.configure(image=img_tk)
             self.img_label.image = img_tk
-
+    
         except amcam.HRESULTException as ex:
             print(f"Camera error: 0x{ex.hr:x}")
 
@@ -230,6 +240,17 @@ class App:
         self.width, self.height = self.hcam.get_Size()
         bufsize = ((self.width * 24 + 31) // 32 * 4) * self.height
         self.buf = bytes(bufsize)
+
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        scale = min(screen_width / self.width, screen_height / self.height, 1.0)
+        win_width = int(self.width * scale)
+        win_height = int(self.height * scale)
+        self.root.geometry(f"{win_width}x{win_height}")
+
+        self.root.update_idletasks()
+        self.root.update()
 
         self.hcam.StartPullModeWithCallback(self.cameraCallback, self)
 
