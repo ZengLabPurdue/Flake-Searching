@@ -2,25 +2,17 @@
 """
 Single-frame pipeline for microscope handoff.
 
-Takes one image (file path or numpy array) and runs the full flake extraction pipeline.
-Returns ONLY the minimal data needed downstream:
-  - contours for each crop (in crop-local coordinates)
-  - background mask for each crop
-  - optional: full-frame background mask
-
-No file I/O for results — everything is returned in memory for passing to the next stage.
+Takes one image (file path or numpy array) and returns exactly two things:
+  1. Full-frame mask overlay (from batch_robust_contours_and_masks) — original image with
+     shapes masked (background visible, shapes blacked out)
+  2. Contours (from batch_filtered_sensitive_overlays_2x2) — raw contour list, no overlay
 
 Usage:
-    from single_frame_pipeline import process_frame, FrameResult
+    from single_frame_pipeline import process_frame
 
-    result = process_frame("path/to/image.png")
-    # or
-    result = process_frame(numpy_image_array)
-
-    for crop in result.crops:
-        contour = crop.contour        # Nx1x2, crop-local coords
-        bg_mask = crop.background_mask  # uint8, 255=background, 0=flake
-        bbox = crop.bbox              # (x, y, w, h) in original image
+    mask_overlay, contours = process_frame("path/to/image.png")
+    # mask_overlay: HxWx3 RGB image (original with shapes blacked out)
+    # contours: list of np.ndarray (Nx1x2), OpenCV contour format
 """
 from __future__ import annotations
 
@@ -28,17 +20,13 @@ import contextlib
 import io
 import json
 import tempfile
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Tuple, Union
 
-import cv2
 import numpy as np
 from PIL import Image
 
-# Import from existing pipeline components
-from batch_robust_contours_and_masks import filter_nested_contours
-from extract_background import extract_background
+from batch_robust_contours_and_masks import process_image_with_masks
 from pipeline import ContourPipeline
 
 # Params for contour detection (from batch_filtered_sensitive_overlays_2x2)
@@ -61,11 +49,6 @@ _DEFAULT_PARAMS = {
     "min_area_contour": 200,
 }
 
-MIN_AREA = 800
-BBOX_PADDING = 20
-HSV_HUE_LO, HSV_HUE_HI = 25, 45
-MAJORITY_THRESHOLD = 0.5
-
 
 def _load_params() -> dict:
     """Load pipeline params from batch_filtered_settings.json if exists."""
@@ -83,31 +66,6 @@ def _load_params() -> dict:
         return _DEFAULT_PARAMS.copy()
 
 
-def _filter_hsv_contours(contours: list, img: np.ndarray) -> list:
-    """Remove contours where majority of interior pixels have HSV H in yellow range (25-45)."""
-    if img.ndim == 2:
-        img = np.stack([img, img, img], axis=-1)
-    h, w = img.shape[:2]
-    img_u8 = np.clip(img, 0, 255).astype(np.uint8) if img.dtype != np.uint8 else img
-    hsv = cv2.cvtColor(img_u8, cv2.COLOR_RGB2HSV)
-    H = hsv[:, :, 0]
-
-    filtered = []
-    for c in contours:
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(mask, [c], -1, 255, -1)
-        interior_H = H[mask > 127]
-        n = len(interior_H)
-        if n < 30:
-            filtered.append(c)
-            continue
-        in_range = np.sum((interior_H >= HSV_HUE_LO) & (interior_H <= HSV_HUE_HI))
-        if in_range / n >= MAJORITY_THRESHOLD:
-            continue
-        filtered.append(c)
-    return filtered
-
-
 def _ensure_rgb_uint8(img: np.ndarray) -> np.ndarray:
     if img.ndim == 2:
         img = np.stack([img, img, img], axis=-1)
@@ -118,41 +76,24 @@ def _ensure_rgb_uint8(img: np.ndarray) -> np.ndarray:
     return img
 
 
-@dataclass
-class CropResult:
-    """Result for one flake crop."""
-
-    contour: np.ndarray  # Nx1x2 in crop-local coordinates
-    background_mask: np.ndarray  # uint8: 255=background, 0=flake
-    bbox: tuple  # (x, y, w, h) in original image
-
-
-@dataclass
-class FrameResult:
-    """Result of processing a single microscope frame."""
-
-    crops: List[CropResult] = field(default_factory=list)
-    full_frame_background_mask: Optional[np.ndarray] = None  # 255=background, 0=shapes
-
-
 def process_frame(
     image: Union[str, Path, np.ndarray],
     *,
-    apply_hsv_filter: bool = True,
     verbose: bool = False,
-) -> FrameResult:
+) -> Tuple[np.ndarray, List[np.ndarray]]:
     """
     Process a single microscope frame (one image).
 
     Args:
         image: File path or numpy array (HxWx3 RGB, uint8)
-        apply_hsv_filter: If True, filter out contours with majority yellow interior
         verbose: If True, print progress; otherwise suppress
 
     Returns:
-        FrameResult with:
-          - crops: list of CropResult, each with contour, background_mask, bbox
-          - full_frame_background_mask: full-frame mask (255=bg, 0=shapes) or None
+        Tuple of:
+          - mask_overlay: HxWx3 image — original with shapes masked (background visible,
+            shapes blacked out). From batch_robust_contours_and_masks logic.
+          - contours: list of contours (each Nx1x2, OpenCV format). From
+            batch_filtered_sensitive_overlays_2x2 (ContourPipeline). Raw contours, not drawn.
     """
     # Load image
     if isinstance(image, (str, Path)):
@@ -160,102 +101,51 @@ def process_frame(
     else:
         img = np.asarray(image)
     img = _ensure_rgb_uint8(img)
-    orig_h, orig_w = img.shape[:2]
-
-    # 1. Run ContourPipeline to get contours (no pre-computed overlays for live frames)
-    params = _load_params()
-    pipeline = ContourPipeline()
-    with contextlib.redirect_stdout(io.StringIO()) if not verbose else contextlib.nullcontext():
-        result = pipeline.run(img, params, return_edges=False, return_binary=False)
-
-    contours = result["contours"]
-    if not contours:
-        return FrameResult(crops=[], full_frame_background_mask=result.get("mask_shapes"))
-
-    # Filter by area
-    contours = [c for c in contours if cv2.contourArea(c) >= MIN_AREA]
-    if apply_hsv_filter:
-        contours = _filter_hsv_contours(contours, img)
-
-    if not contours:
-        return FrameResult(
-            crops=[],
-            full_frame_background_mask=(255 - result["mask_shapes"]) if "mask_shapes" in result else None,
-        )
-
-    # Full-frame background mask: invert shape mask (shapes=255 -> bg=255, shapes=0 -> bg=0)
-    mask_shapes = result.get("mask_shapes")
-    full_frame_bg_mask = (255 - mask_shapes) if mask_shapes is not None else None
-
-    # 2. For each contour: crop, run background extractor, get contour + mask
-    crops_out: List[CropResult] = []
-    pad = BBOX_PADDING
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
+        img_path = tmp_path / "frame.png"
+        Image.fromarray(img).save(img_path)
+        output_dir = tmp_path / "robust_out"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Run batch_robust_contours_and_masks to get mask overlay
         suppress = contextlib.redirect_stdout(io.StringIO()) if not verbose else contextlib.nullcontext()
+        with suppress:
+            ok = process_image_with_masks(img_path, output_dir)
+        if not ok:
+            # Fallback: return original image and empty contours if robust fails
+            mask_overlay = img.copy()
+        else:
+            masked_path = output_dir / "frame_masked_background_only.png"
+            if masked_path.exists():
+                mask_overlay = np.array(Image.open(masked_path))
+                if mask_overlay.ndim == 2:
+                    mask_overlay = np.stack([mask_overlay, mask_overlay, mask_overlay], axis=-1)
+                if mask_overlay.shape[2] == 4:
+                    mask_overlay = mask_overlay[:, :, :3]
+            else:
+                mask_overlay = img.copy()
 
-        for idx, contour in enumerate(contours):
-            x, y, w, h = cv2.boundingRect(contour)
-            side = max(w, h) + 2 * pad
-            cx, cy = x + w // 2, y + h // 2
-            half = side // 2
-            x1 = max(0, cx - half)
-            y1 = max(0, cy - half)
-            x2 = min(orig_w, x1 + side)
-            y2 = min(orig_h, y1 + side)
-            x1 = max(0, x2 - side)
-            y1 = max(0, y2 - side)
+        # 2. Run batch_filtered_sensitive (ContourPipeline) to get contours only
+        params = _load_params()
+        pipeline = ContourPipeline()
+        with suppress if not verbose else contextlib.nullcontext():
+            result = pipeline.run(img, params, return_edges=False, return_binary=False)
+        contours = result.get("contours", [])
+        contours = list(contours)  # ensure list of np arrays
 
-            crop = img[y1:y2, x1:x2].copy()
-            crop_path = tmp_path / f"crop_{idx}.png"
-            Image.fromarray(crop).save(crop_path)
-
-            # Contour in crop-local coordinates
-            rel_contour = contour.copy()
-            rel_contour[:, 0, 0] -= x1
-            rel_contour[:, 0, 1] -= y1
-
-            # Run background extractor on crop
-            try:
-                with suppress:
-                    _, mask_inv, _ = extract_background(
-                        crop_path,
-                        output_path=tmp_path / f"bg_{idx}",
-                        bin_factor=1,
-                        canny_low=5,
-                        canny_high=25,
-                        min_area=5,
-                        bridge_max_gap=30,
-                        force_close_max_gap=40,
-                    )
-                bg_mask = mask_inv  # 255=background, 0=flake
-            except Exception:
-                # Fallback: use contour fill as flake mask, invert for background
-                flake_mask = np.zeros((crop.shape[0], crop.shape[1]), dtype=np.uint8)
-                cv2.fillPoly(flake_mask, [rel_contour], 255)
-                bg_mask = 255 - flake_mask
-
-            crops_out.append(
-                CropResult(
-                    contour=rel_contour,
-                    background_mask=bg_mask,
-                    bbox=(x, y, w, h),
-                )
-            )
-
-    return FrameResult(crops=crops_out, full_frame_background_mask=full_frame_bg_mask)
+    return mask_overlay, contours
 
 
 def main():
-    """CLI: process one image and print summary (no files written)."""
+    """CLI: process one image and print summary."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Process a single microscope frame; output contours + masks (no files)."
+        description="Process a single microscope frame; returns mask overlay + contours."
     )
     parser.add_argument("image", type=Path, help="Path to image file")
-    parser.add_argument("--no-filter", action="store_true", help="Disable HSV yellow filter")
     parser.add_argument("-v", "--verbose", action="store_true", help="Print progress")
     args = parser.parse_args()
 
@@ -263,19 +153,11 @@ def main():
         print(f"Error: {args.image} not found")
         return 1
 
-    result = process_frame(
-        args.image,
-        apply_hsv_filter=not args.no_filter,
-        verbose=args.verbose,
-    )
+    mask_overlay, contours = process_frame(args.image, verbose=args.verbose)
 
     print(f"Processed: {args.image.name}")
-    print(f"  Contours/crops: {len(result.crops)}")
-    if result.full_frame_background_mask is not None:
-        print(f"  Full-frame background mask: {result.full_frame_background_mask.shape}")
-
-    for i, c in enumerate(result.crops):
-        print(f"  Crop {i}: bbox={c.bbox}, contour pts={len(c.contour)}, mask shape={c.background_mask.shape}")
+    print(f"  Mask overlay shape: {mask_overlay.shape}")
+    print(f"  Contours: {len(contours)}")
 
     return 0
 
