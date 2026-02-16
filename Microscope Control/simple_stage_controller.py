@@ -262,7 +262,7 @@ class App:
             print("No frame available to save.")
             return
 
-        save_dir = "captured_images"
+        save_dir = "Saved Images"
         os.makedirs(save_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
