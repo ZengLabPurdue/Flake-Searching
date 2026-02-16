@@ -237,6 +237,9 @@ class App:
             return
 
         self.hcam = amcam.Amcam.Open(cams[0].id)
+        self.hcam.put_AutoExpoEnable(True)
+        self.hcam.put_AutoExpoTarget(60)
+
         self.width, self.height = self.hcam.get_Size()
         bufsize = ((self.width * 24 + 31) // 32 * 4) * self.height
         self.buf = bytes(bufsize)
