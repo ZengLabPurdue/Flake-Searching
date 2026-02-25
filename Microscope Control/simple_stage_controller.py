@@ -13,6 +13,7 @@ from PIL import Image
 
 DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
+DEFAULT_EXPOSURE = 60
 
 try:
     pr = prior(COM_PORT, DLL_PATH)
@@ -45,6 +46,7 @@ class App:
 
         self.init_manual_control_button_panel()
         self.init_capture_image_panel()
+        self.init_adjust_exposure_panel()
 
         self.hcam = None
         self.buf = None
@@ -95,7 +97,6 @@ class App:
             textvariable=self.step_size_var,
             width=5
         )
-        self.step_entry.bind("<Return>", self.on_enter_step_size)
         self.step_entry.place(relx=0.0, rely=0.0, x=150, y=45, anchor="n")
 
         self.manual_control_button_panel = Frame(
@@ -169,29 +170,79 @@ class App:
         )
         self.capture_button.place(relx=0.5, y=50, anchor="center")
 
+    def init_adjust_exposure_panel(self):
+        self.adjust_exposure_border = Frame(
+            self.main_frame,
+            bg="#f0f0f0",
+            width=204,
+            height=100
+        )
+        self.adjust_exposure_border.place(relx=1.0, rely=0.0, anchor="ne", y=262)
+
+        self.adjust_exposure_panel = Frame(
+            self.adjust_exposure_border,
+            bg="white",
+            width=200,
+            height=98
+        )
+        self.adjust_exposure_panel.place(x=2, y=0)
+
+        adjust_exposure_title = Label(
+            self.adjust_exposure_border,
+            text="Adjust Exposure",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 13)
+        )
+        adjust_exposure_title.place(relx=0.5, y=5, anchor="n")
+
+        style = ttk.Style()
+        style.configure("Custom.Horizontal.TScale", background="white")
+
+        self.exposure_var = DoubleVar(value=DEFAULT_EXPOSURE)
+        self.adjust_exposure_slider = ttk.Scale(
+            self.adjust_exposure_panel,
+            from_=30,
+            to=120,
+            orient="horizontal",
+            variable=self.exposure_var,
+            command=self.adjust_exposure,
+            style="Custom.Horizontal.TScale"
+        )
+        self.adjust_exposure_slider.place(relx=0.5, y=50, anchor="center")
+
+        self.exposure_value_label = Label(
+            self.adjust_exposure_panel,
+            text=f"Exposure: {DEFAULT_EXPOSURE}",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 8)
+        )
+        self.exposure_value_label.place(relx=0.5, y=70, anchor="n")
+
     def move_up(self):
         global y_pos
-        y_pos -= self.step_size
+        y_pos -= int(self.step_entry.get())
         pr.go_to_pos(x_pos, y_pos)
 
     def move_down(self):
         global y_pos
-        y_pos += self.step_size
+        y_pos += int(self.step_entry.get())
         pr.go_to_pos(x_pos, y_pos)
 
     def move_left(self):
         global x_pos
-        x_pos -= self.step_size
+        x_pos -= int(self.step_entry.get())
         pr.go_to_pos(x_pos, y_pos)
 
     def move_right(self):
         global x_pos
-        x_pos += self.step_size
+        x_pos += int(self.step_entry.get())
         pr.go_to_pos(x_pos, y_pos)
-    
-    def on_enter_step_size(self, event=None):
-        print(self.step_size)
-        self.step_size = int(self.step_entry.get())
+
+    def adjust_exposure(self, exposure):
+        self.hcam.put_AutoExpoTarget(int(float(exposure)))
+        self.exposure_value_label.config(text=f"Exposure: {int(float(self.hcam.get_AutoExpoTarget()))}")
 
     @staticmethod
     def cameraCallback(nEvent, ctx):
@@ -210,14 +261,12 @@ class App:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(img_rgb)
     
-            # Use label size (matches window size) for scaling
             lbl_w = self.img_label.winfo_width() or self.width
             lbl_h = self.img_label.winfo_height() or self.height
     
             img_pil_copy = img_pil.copy()
             img_pil_copy.thumbnail((lbl_w, lbl_h), Image.Resampling.LANCZOS)
     
-            # Center the image in the label
             display_img = Image.new("RGB", (lbl_w, lbl_h), (0, 0, 0))
             x_offset = (lbl_w - img_pil_copy.width) // 2
             y_offset = (lbl_h - img_pil_copy.height) // 2
@@ -238,7 +287,7 @@ class App:
 
         self.hcam = amcam.Amcam.Open(cams[0].id)
         self.hcam.put_AutoExpoEnable(True)
-        self.hcam.put_AutoExpoTarget(60)
+        self.hcam.put_AutoExpoTarget(DEFAULT_EXPOSURE)
 
         self.width, self.height = self.hcam.get_Size()
         bufsize = ((self.width * 24 + 31) // 32 * 4) * self.height
