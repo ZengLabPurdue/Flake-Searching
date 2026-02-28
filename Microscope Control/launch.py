@@ -3,11 +3,17 @@ import subprocess
 from pathlib import Path
 from tkinter import Tk, StringVar
 from tkinter import ttk
+from tkinter import filedialog
 
 homedir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(homedir)
 
 # Hello roommate
+
+file_path = filedialog.askopenfilename(
+    title="Select Python file",
+    filetypes=[("Python files", "*.py")]
+)
 
 def on_close():
     pr_args_final = pr_args.get() or "0"
@@ -18,7 +24,7 @@ def on_close():
     root.destroy()
 
     python_exe = Path(homedir) / ".venv" / "Scripts" / "python.exe"
-    script = Path(homedir) / "simple_stage_controller.py"
+    script = file_path
 
     cmd = [str(python_exe), str(script), str(pr_args_final)]
     subprocess.run(cmd, check=True)

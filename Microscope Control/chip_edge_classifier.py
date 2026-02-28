@@ -9,7 +9,7 @@ image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpe
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-threshold = 150
+threshold = 50
 
 blue = image[:, :, 0] 
 
