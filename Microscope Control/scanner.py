@@ -6,10 +6,11 @@ from tkinter import *
 from tkinter import ttk
 import tkinter.font as tkFont
 from PIL import Image, ImageTk
+
 import amcam
 from prior import prior
 from datetime import datetime
-from PIL import Image
+import chip_edge_classifier
 
 DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
@@ -34,7 +35,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Scanning App")
-        self.main_frame = Frame(root, bg="black")
+        self.main_frame = Frame(root, bg="#f0f0f0")
         self.main_frame.pack(fill=BOTH, expand=True)
 
         self.map_canvas = Canvas(self.main_frame, bg="white")
@@ -42,10 +43,11 @@ class App:
 
         self.map = np.zeros((3000, 3000), dtype=np.int8)
 
-        self.img_label = Label(self.map_canvas, bg="black")
+        self.img_label = Label(self.main_frame, bg="#f0f0f0")
         self.img_label.pack(fill=BOTH, expand=True)
 
-        self.view_mode = "Live"
+        self.view_mode = "Camera View"
+        self.set_view(self.view_mode)
 
         self.init_menu_bar()
         self.init_info_panel()
@@ -68,7 +70,7 @@ class App:
         viewmenu = Menu(menubar, tearoff=0)
         viewmenu.add_command(label="Map", command=lambda: self.set_view("Map"))
         livemenu = Menu(viewmenu, tearoff=0)
-        livemenu.add_command(label="Camera View", command=lambda: self.set_view("Live"))
+        livemenu.add_command(label="Camera View", command=lambda: self.set_view("Camera View"))
         livemenu.add_command(label="Filter", command=lambda: self.set_view("Filter"))
         viewmenu.add_cascade(label="Live", menu=livemenu)
         menubar.add_cascade(label="View", menu=viewmenu)
@@ -190,9 +192,9 @@ class App:
         else:
             self.img_label.pack(fill=BOTH, expand=True)
             self.map_canvas.pack_forget() # Hide map canvas
-            if mode == "Filter":
+            if mode == "Camera View":
                 pass 
-            elif mode == "Live":
+            elif mode == "Filter":
                 pass
 
     def draw_map(self):
@@ -229,6 +231,8 @@ class App:
 
     def on_image(self):
         try:
+            if self.view_mode == "Map": return
+
             self.hcam.PullImageV2(self.buf, 24, None)
     
             row_bytes = ((self.width * 24 + 31) // 32 * 4)
@@ -236,16 +240,22 @@ class App:
             img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
             self.current_frame = img.copy()
     
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            if self.view_mode == "Camera View":
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            elif self.view_mode == "Filter":
+                img_rgb = chip_edge_classifier.chip_filter(img)
             img_pil = Image.fromarray(img_rgb)
     
             lbl_w = self.img_label.winfo_width() or self.width
             lbl_h = self.img_label.winfo_height() or self.height
     
+            if lbl_w < 10 or lbl_h < 10:
+                return
+
             img_pil_copy = img_pil.copy()
             img_pil_copy.thumbnail((lbl_w, lbl_h), Image.Resampling.LANCZOS)
     
-            display_img = Image.new("RGB", (lbl_w, lbl_h), (0, 0, 0))
+            display_img = Image.new("RGB", (lbl_w, lbl_h), "#f0f0f0")
             x_offset = (lbl_w - img_pil_copy.width) // 2
             y_offset = (lbl_h - img_pil_copy.height) // 2
             display_img.paste(img_pil_copy, (x_offset, y_offset))
