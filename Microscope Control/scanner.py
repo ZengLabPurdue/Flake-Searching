@@ -1,7 +1,10 @@
 import os
 import sys
+import time
+
 import cv2
 import numpy as np
+
 from tkinter import *
 from tkinter import ttk
 import tkinter.font as tkFont
@@ -9,15 +12,17 @@ from PIL import Image, ImageTk
 
 import amcam
 from prior import prior
-from datetime import datetime
 import chip_edge_classifier
 
 DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
 DEFAULT_EXPOSURE = 60
 
-Y_SIZE = 3660
-X_SIZE = 2435
+X_SIZE_2 = 4635 # 7 Frames
+Y_SIZE_2 = 7410 # 4 Frames
+
+Y_SIZE_4 = 3660 # 
+X_SIZE_4 = 2435 #
 
 MAGNIFICATION = 4
 
@@ -49,6 +54,8 @@ class App:
         self.view_mode = "Camera View"
         self.set_view(self.view_mode)
 
+        self.init_map_display()
+        self.init_live_display()
         self.init_menu_bar()
         self.init_info_panel()
         self.init_settings_panel()
@@ -60,6 +67,39 @@ class App:
         self.height = 0
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def init_map_display(self):
+        map_norm = ((self.map - self.map.min()) / max(self.map.max() - self.map.min(), 1) * 255).astype(np.uint8)
+        self.map_image = Image.fromarray(map_norm)
+
+        canvas_width = self.map_canvas.winfo_width()
+        canvas_height = self.map_canvas.winfo_height()
+
+        if canvas_width == 1 or canvas_height == 1:
+            self.map_canvas.bind("<Configure>", lambda e: self.init_map_display())
+            return
+
+        img_ratio = self.map_image.width / self.map_image.height
+        canvas_ratio = canvas_width / canvas_height
+
+        if img_ratio > canvas_ratio:
+            new_width = canvas_width
+            new_height = int(canvas_width / img_ratio)
+        else:
+            new_height = canvas_height
+            new_width = int(canvas_height * img_ratio)
+
+        img_resized = self.map_image.resize((new_width, new_height), Image.NEAREST)
+        self.tk_map_image = ImageTk.PhotoImage(img_resized)
+
+        self.map_canvas.delete("all")
+
+        x_center = canvas_width // 2
+        y_center = canvas_height // 2
+        self.map_canvas.create_image(x_center, y_center, image=self.tk_map_image, anchor="center")
+    
+    def init_live_display(self):
+        pass
 
     def init_menu_bar(self):
         menubar = Menu(root)
@@ -75,8 +115,8 @@ class App:
         viewmenu.add_cascade(label="Live", menu=livemenu)
         menubar.add_cascade(label="View", menu=viewmenu)
 
-        menubar.add_command(label="Settings", command=lambda: self.open_settings())
-        menubar.add_command(label="Run Scan", command=lambda: self.run_scan())
+        menubar.add_command(label="Settings", command=lambda: self.open_settings)
+        menubar.add_command(label="Run Scan", command=lambda: self.run_scan)
 
         root.config(menu=menubar)
 
@@ -176,11 +216,93 @@ class App:
     def open_settings(self):
         pass
 
-    # Complete chip scan method
-    def run_scan(self):
-        pr.get_curr_pos()
-        self.start_location = (pr.x, pr.y)
-        pass
+    def run_scan(self, zoom=10):
+
+        start_time = time.time()
+        total_frames = max(num_steps_x, num_steps_y) ** 2
+
+        global x_pos, y_pos
+
+        num_steps_x = 4
+        num_steps_y = 7
+
+        center_x = x_pos
+        center_y = y_pos
+
+        spiral_coords = []
+        dx, dy = 0, 0
+        step = 1
+        direction = 0
+
+        while len(spiral_coords) < total_frames:
+            for _ in range(2):
+                for _ in range(step):
+                    print(spiral_coords)
+                    if len(spiral_coords) >= total_frames:
+                        break
+                    spiral_coords.append((dx, dy))
+                    if direction == 0:
+                        dx += 1
+                    elif direction == 1:
+                        dy += 1
+                    elif direction == 2:
+                        dx -= 1
+                    else:
+                        dy -= 1
+                direction = (direction + 1) % 4
+            step += 1
+
+        for coord in spiral_coords:
+            print(coord)
+
+        i = 0
+        for offset_x, offset_y in spiral_coords:
+            target_x = center_x + offset_x * X_SIZE_2
+            target_y = center_y - offset_y * Y_SIZE_2 
+
+            pr.go_to_pos(target_x, target_y)
+            x_pos, y_pos = target_x, target_y
+
+            img = self.capture_frame()
+
+            img_rgb = chip_edge_classifier.chip_filter(img)
+
+            img_rgb = np.fliplr(img_rgb)
+
+            map_x = self.map.shape[1] // 2 + offset_x * X_SIZE_2 // zoom
+            map_y = self.map.shape[0] // 2 + offset_y * Y_SIZE_2 // zoom
+
+            h, w = img_rgb.shape[:2]
+            img_small = img_rgb[::zoom, ::zoom, 0]
+
+            x_start = max(0, map_x)
+            y_start = max(0, map_y)
+            x_end = min(self.map.shape[1], x_start + img_small.shape[1])
+            y_end = min(self.map.shape[0], y_start + img_small.shape[0])
+
+            self.map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
+
+            elapsed = time.time() - start_time
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+            progress_percent = f"{(i+1)}/{total_frames} ({(i+1)*100//total_frames}%)"
+            i = i + 1
+    
+            self.update_scan_status(progress=progress_percent, elapsed_time=elapsed_str)
+
+            time.sleep(1)
+
+    def update_scan_status(self, progress=None, elapsed_time=None, magnification=None):
+        if magnification is not None:
+            self.info_magnification_label.config(text=f"Magnification: {magnification}x")
+
+        if progress is not None:
+            self.info_progress_label.config(text=f"Progress: {progress}")
+
+        if elapsed_time is not None:
+            self.info_time_label.config(text=f"Time Elapsed: {elapsed_time}")
+
+        self.init_map_display()
+        self.info_panel_border.update()
 
     def set_view(self, mode):
         self.view_mode = mode

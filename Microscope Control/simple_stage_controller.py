@@ -16,9 +16,11 @@ DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
 DEFAULT_EXPOSURE = 60
 
-Y_SIZE = 3660
-X_SIZE = 2435
+X_SIZE_2 = 4635 # 7 Frames
+Y_SIZE_2 = 7410 # 4 Frames
 
+Y_SIZE_4 = 3660 # 
+X_SIZE_4 = 2435 #
 try:
     pr = prior(COM_PORT, DLL_PATH)
     pr.get_curr_pos()
