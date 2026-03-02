@@ -4,24 +4,73 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from tkinter import filedialog
+from scipy.signal import find_peaks
 
-def chip_filter(image, threshold=50):
+def chip_filter(image, threshold=None, sample=30):
+
+    if threshold:
+        pass
+    else:
+        sample = 30
+        values = image[::sample, ::sample, 0].ravel()
+
+        hist = np.bincount(values, minlength=256)
+        threshold = threshold_after_highest_peak(hist)
 
     blue = image[:, :, 0] 
 
     binary = (blue >= threshold).astype(np.uint8) * 255
     h, w = binary.shape[:2]
 
-    holes = binary.copy()
-    mask = np.zeros((h + 2, w + 2), np.uint8)
-    cv2.floodFill(holes, mask, (0, 0), 255)
-    holes_inv = cv2.bitwise_not(holes)
-    filled = cv2.bitwise_or(binary, holes_inv)
-    filled = (filled > 0).astype(np.uint8) * 255
+    binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
-    filled_rgb = cv2.cvtColor(filled, cv2.COLOR_GRAY2RGB)
+    return binary_rgb
 
-    return filled_rgb
+def threshold_after_highest_peak(hist, smoothing=30, min_prominence=0.05, display=False):
+
+    if smoothing > 1:
+        hist = np.convolve(hist, np.ones(smoothing)/smoothing, mode='same')
+
+    abs_prominence = min_prominence * np.max(hist)
+
+    peaks, _ = find_peaks(hist, prominence=abs_prominence)
+
+    if display:
+        plt.figure(figsize=(10,5))
+        plt.bar(np.arange(256), hist, width=1, color='lightgray', label='Raw histogram')
+        plt.plot(hist, color='blue', linewidth=2, label='Smoothed histogram')
+        plt.scatter(peaks, hist[peaks], color='red', s=50, label='Peaks')
+        plt.xlabel('Blue Intensity')
+        plt.ylabel('Pixel Count')
+        plt.title('Histogram of Blue Channel (Smoothed)')
+        plt.legend()
+        plt.show()
+
+    if len(peaks) <= 1:
+        return 0
+
+    top_two_peaks = np.sort(peaks)[-2:] if len(peaks) > 1 else peaks
+
+    threshold = (top_two_peaks[0] + top_two_peaks[1]) // 2
+
+    if display:
+        x = np.arange(256)
+        plt.figure()
+        plt.bar(
+            x[:threshold],
+            hist[:threshold],
+        )
+        plt.bar(
+            x[threshold:],
+            hist[threshold:],
+        )
+        plt.axvline(threshold)
+        plt.xlabel("Blue Intensity")
+        plt.ylabel("Pixel Count")
+        plt.title(f"Histogram with Threshold = {threshold}")
+        plt.show()
+
+    return threshold
 
 '''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])

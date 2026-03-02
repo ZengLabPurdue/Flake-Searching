@@ -10,6 +10,7 @@ import amcam
 from prior import prior
 from datetime import datetime
 from PIL import Image
+import chip_edge_classifier
 
 DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
@@ -262,6 +263,7 @@ class App:
             self.current_frame = img.copy()
     
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            #img_rgb = chip_edge_classifier.chip_filter(img)
             img_pil = Image.fromarray(img_rgb)
     
             lbl_w = self.img_label.winfo_width() or self.width
