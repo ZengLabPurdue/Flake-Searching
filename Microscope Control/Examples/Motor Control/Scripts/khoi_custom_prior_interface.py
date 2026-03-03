@@ -76,6 +76,7 @@ class prior():
             self.cmd(f"controller.z.speed.set {self.z_velocity}")
 
         except Exception as e:
+            print("Test")
             print(e)
 
     def cmd(self, msg):

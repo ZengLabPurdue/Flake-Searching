@@ -31,6 +31,8 @@ except Exception as e:
     print("Failed to connect to Prior:", e)
     sys.exit(1)
 
+print("")
+
 class App:
     def __init__(self, root):
         self.root = root

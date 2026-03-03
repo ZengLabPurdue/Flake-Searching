@@ -22,9 +22,9 @@ def chip_filter(image, threshold=None, sample=30):
     binary = (blue >= threshold).astype(np.uint8) * 255
     h, w = binary.shape[:2]
 
-    binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+    #binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
-    return binary_rgb
+    return binary
 
 def threshold_after_highest_peak(hist, smoothing=30, min_prominence=0.05, display=False):
 

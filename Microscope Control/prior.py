@@ -12,6 +12,8 @@ class prior():
         self.z_velocity = 2600
         self.z_acceleration = 134442
 
+        print("Initializing...")
+
         if os.path.exists(self.path):
             global SDKPrior
             SDKPrior = WinDLL(self.path, winmode=0)
@@ -23,32 +25,35 @@ class prior():
 
             ret = SDKPrior.PriorScientificSDK_Initialise()
             if ret:
-                print(f"Error initialising {ret}")
+                #print(f"Error initialising {ret}")
                 sys.exit()
             else:
-                print(f"Ok initialising {ret}")
+                pass
+                #print(f"Ok initialising {ret}")
 
             ret = SDKPrior.PriorScientificSDK_Version(rx)
-            print(f"dll version api ret={ret}, version={rx.value.decode()}")
+            #print(f"dll version api ret={ret}, version={rx.value.decode()}")
 
             global sessionID
             sessionID = SDKPrior.PriorScientificSDK_OpenNewSession()
+            '''
             if sessionID < 0:
                 print(f"Error getting sessionID {ret}")
             else:
                 print(f"SessionID = {sessionID}")
-
+            '''
+            
             ret = SDKPrior.PriorScientificSDK_cmd(
                 sessionID, create_string_buffer(b"dll.apitest 33 goodresponse"), rx
             )
-            print(f"api response {ret}, rx = {rx.value.decode()}")
+            #print(f"api response {ret}, rx = {rx.value.decode()}")
 
             ret = SDKPrior.PriorScientificSDK_cmd(
                 sessionID, create_string_buffer(b"dll.apitest -300 stillgoodresponse"), rx
             )
-            print(f"api response {ret}, rx = {rx.value.decode()}")
+            #print(f"api response {ret}, rx = {rx.value.decode()}")
 
-            # print("controller.connect ", self.port_num)
+            #print("controller.connect ", self.port_num)
             self.cmd(f"controller.connect {self.port_num}")
 
             # initialization
@@ -57,7 +62,7 @@ class prior():
             position = self.cmd("controller.stage.position.get")
             curr_pos = position[1]
             curr_pos_list = curr_pos.split(",")
-            print(curr_pos_list)
+            #print(curr_pos_list)
             self.x = int(curr_pos_list[0])
             self.y = int(curr_pos_list[1])
             z_pos = self.cmd("controller.z.position.get")
@@ -65,7 +70,7 @@ class prior():
 
             ## get backlash values
             self.backlash_en, self.backlash_dist = self.get_backlash()
-            self.z_backlash_en, self.z_backlash_dist = self.get_z_backlash()
+            #self.z_backlash_en, self.z_backlash_dist = self.get_z_backlash()
 
             ## set velocity and acceleration
             self.check_busy()
@@ -75,18 +80,23 @@ class prior():
             self.cmd(f"controller.stage.speed.set {self.velocity}")
             self.cmd(f"controller.z.speed.set {self.z_velocity}")
 
+            print("Initializing!")
+
         except Exception as e:
+            
             print(e)
 
     def cmd(self, msg):
-        print(msg)
+        #print(msg)
         ret = SDKPrior.PriorScientificSDK_cmd(
             sessionID, create_string_buffer(msg.encode()), rx
         )
+        '''
         if ret:
             print(f"Api error {ret}")
         else:
             print(f"OK {rx.value.decode()}")
+        '''
         return ret, rx.value.decode()
     
     def check_busy(self):

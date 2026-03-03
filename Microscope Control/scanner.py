@@ -31,7 +31,6 @@ try:
     pr.get_curr_pos()
     x_pos = pr.x
     y_pos = pr.y
-    print("Connected to Prior stage")
 except Exception as e:
     print("Failed to connect to Prior:", e)
     sys.exit(1)
@@ -115,8 +114,8 @@ class App:
         viewmenu.add_cascade(label="Live", menu=livemenu)
         menubar.add_cascade(label="View", menu=viewmenu)
 
-        menubar.add_command(label="Settings", command=lambda: self.open_settings)
-        menubar.add_command(label="Run Scan", command=lambda: self.run_scan)
+        menubar.add_command(label="Settings", command=self.open_settings)
+        menubar.add_command(label="Run Scan", command=self.run_scan)
 
         root.config(menu=menubar)
 
@@ -147,17 +146,31 @@ class App:
         )
         title_label.place(relx=0.5, y=10, anchor="n")
 
-        for text, y in [
-            (f"Magnification: {MAGNIFICATION}x", 35),
-            ("Progress: Not Started", 55),
-            ("Time Elapsed: Not Started", 75),
-        ]:
-            Label(
-                self.info_panel_border,
-                text=text,
-                bg="white",
-                fg="black"
-            ).place(relx=0.5, y=y, anchor="n")
+        self.info_magnification_label = Label(
+            self.info_panel_border,
+            text=f"Magnification: {MAGNIFICATION}x",
+            bg="white",
+            fg="black"
+        )
+        self.info_magnification_label.place(relx=0.5, y=35, anchor="n")
+
+
+        self.info_progress_label = Label(
+            self.info_panel_border,
+            text="Progress: Not Started",
+            bg="white",
+            fg="black"
+        )
+        self.info_progress_label.place(relx=0.5, y=55, anchor="n")
+
+
+        self.info_time_label = Label(
+            self.info_panel_border,
+            text="Time Elapsed: Not Started",
+            bg="white",
+            fg="black"
+        )
+        self.info_time_label.place(relx=0.5, y=75, anchor="n")
 
     def init_settings_panel(self):
         self.settings_border = Frame(
@@ -218,13 +231,15 @@ class App:
 
     def run_scan(self, zoom=10):
 
+        print("Scan running...")
+
         start_time = time.time()
-        total_frames = max(num_steps_x, num_steps_y) ** 2
 
         global x_pos, y_pos
 
         num_steps_x = 4
         num_steps_y = 7
+        total_frames = max(num_steps_x, num_steps_y) ** 2
 
         center_x = x_pos
         center_y = y_pos
@@ -237,7 +252,6 @@ class App:
         while len(spiral_coords) < total_frames:
             for _ in range(2):
                 for _ in range(step):
-                    print(spiral_coords)
                     if len(spiral_coords) >= total_frames:
                         break
                     spiral_coords.append((dx, dy))
@@ -252,9 +266,6 @@ class App:
                 direction = (direction + 1) % 4
             step += 1
 
-        for coord in spiral_coords:
-            print(coord)
-
         i = 0
         for offset_x, offset_y in spiral_coords:
             target_x = center_x + offset_x * X_SIZE_2
@@ -263,11 +274,18 @@ class App:
             pr.go_to_pos(target_x, target_y)
             x_pos, y_pos = target_x, target_y
 
+            time.sleep(1)
+
             img = self.capture_frame()
 
-            img_rgb = chip_edge_classifier.chip_filter(img)
-
+            binary = chip_edge_classifier.chip_filter(img)
+            img_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
             img_rgb = np.fliplr(img_rgb)
+
+            if self.view_mode == "Camera View":
+                self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            elif self.view_mode == "Filter":
+                self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
 
             map_x = self.map.shape[1] // 2 + offset_x * X_SIZE_2 // zoom
             map_y = self.map.shape[0] // 2 + offset_y * Y_SIZE_2 // zoom
@@ -290,6 +308,8 @@ class App:
             self.update_scan_status(progress=progress_percent, elapsed_time=elapsed_str)
 
             time.sleep(1)
+
+        print("Scan finished!")
 
     def update_scan_status(self, progress=None, elapsed_time=None, magnification=None):
         if magnification is not None:
@@ -346,6 +366,26 @@ class App:
             image=self.map_tk
         )
 
+    def display_live_image(self, img_rgb):
+        img_pil = Image.fromarray(img_rgb)
+
+        lbl_w = self.img_label.winfo_width() or self.width
+        lbl_h = self.img_label.winfo_height() or self.height
+
+        if lbl_w < 10 or lbl_h < 10:
+            return
+        img_pil_copy = img_pil.copy()
+        img_pil_copy.thumbnail((lbl_w, lbl_h), Image.Resampling.LANCZOS)
+
+        display_img = Image.new("RGB", (lbl_w, lbl_h), "#f0f0f0")
+        x_offset = (lbl_w - img_pil_copy.width) // 2
+        y_offset = (lbl_h - img_pil_copy.height) // 2
+        display_img.paste(img_pil_copy, (x_offset, y_offset))
+
+        img_tk = ImageTk.PhotoImage(display_img)
+        self.img_label.configure(image=img_tk)
+        self.img_label.image = img_tk
+
     @staticmethod
     def cameraCallback(nEvent, ctx):
         if nEvent == amcam.AMCAM_EVENT_IMAGE:
@@ -353,8 +393,6 @@ class App:
 
     def on_image(self):
         try:
-            if self.view_mode == "Map": return
-
             self.hcam.PullImageV2(self.buf, 24, None)
     
             row_bytes = ((self.width * 24 + 31) // 32 * 4)
@@ -362,29 +400,12 @@ class App:
             img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
             self.current_frame = img.copy()
     
+            if self.view_mode == "Map": return
+            
             if self.view_mode == "Camera View":
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
             elif self.view_mode == "Filter":
-                img_rgb = chip_edge_classifier.chip_filter(img)
-            img_pil = Image.fromarray(img_rgb)
-    
-            lbl_w = self.img_label.winfo_width() or self.width
-            lbl_h = self.img_label.winfo_height() or self.height
-    
-            if lbl_w < 10 or lbl_h < 10:
-                return
-
-            img_pil_copy = img_pil.copy()
-            img_pil_copy.thumbnail((lbl_w, lbl_h), Image.Resampling.LANCZOS)
-    
-            display_img = Image.new("RGB", (lbl_w, lbl_h), "#f0f0f0")
-            x_offset = (lbl_w - img_pil_copy.width) // 2
-            y_offset = (lbl_h - img_pil_copy.height) // 2
-            display_img.paste(img_pil_copy, (x_offset, y_offset))
-    
-            img_tk = ImageTk.PhotoImage(display_img)
-            self.img_label.configure(image=img_tk)
-            self.img_label.image = img_tk
+                self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
     
         except amcam.HRESULTException as ex:
             print(f"Camera error: 0x{ex.hr:x}")
@@ -417,14 +438,7 @@ class App:
         self.hcam.StartPullModeWithCallback(self.cameraCallback, self)
 
     def capture_frame(self):
-        self.hcam.Snap(1)
-        self.hcam.PullImageV2(self.buf, 24, None)
-    
-        row_bytes = ((self.width * 24 + 31) // 32 * 4)
-        img = np.frombuffer(self.buf, np.uint8).reshape(self.height, row_bytes)
-        img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
-    
-        return img.copy()
+        return self.current_frame.copy()
 
     def on_close(self):
         self.hcam = None
