@@ -6,7 +6,12 @@ from matplotlib import cm
 from tkinter import filedialog
 from scipy.signal import find_peaks
 
-def chip_filter(image, threshold=None, sample=30):
+def chip_filter(image, threshold=None, sample=30, display=False):
+
+    if (display):
+        plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        plt.axis("off")
+        plt.show()
 
     if threshold:
         pass
@@ -15,12 +20,17 @@ def chip_filter(image, threshold=None, sample=30):
         values = image[::sample, ::sample, 0].ravel()
 
         hist = np.bincount(values, minlength=256)
-        threshold = threshold_after_highest_peak(hist)
+        threshold = threshold_after_highest_peak(hist, display=display)
 
     blue = image[:, :, 0] 
 
     binary = (blue >= threshold).astype(np.uint8) * 255
     h, w = binary.shape[:2]
+
+    if (display):
+        plt.imshow(cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB))
+        plt.axis("off")
+        plt.show()
 
     #binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
@@ -46,8 +56,10 @@ def threshold_after_highest_peak(hist, smoothing=30, min_prominence=0.05, displa
         plt.legend()
         plt.show()
 
-    if len(peaks) <= 1:
-        return 0
+    if len(peaks) == 1:
+        if peaks[0] < 100: return 256
+        else: return 0
+    elif len(peaks) == 0: return 0
 
     top_two_peaks = np.sort(peaks)[-2:] if len(peaks) > 1 else peaks
 
@@ -77,7 +89,7 @@ image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpe
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-plt.imshow(chip_filter(image))
+plt.imshow(cv2.cvtColor(chip_filter(image), cv2.COLOR_GRAY2RGB))
 plt.axis("off")
 plt.show()
 '''

@@ -18,13 +18,13 @@ DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
 DEFAULT_EXPOSURE = 60
 
-X_SIZE_2 = 4635 # 7 Frames
-Y_SIZE_2 = 7410 # 4 Frames
+X_SIZE_2 = 4635 # 5 Frames
+Y_SIZE_2 = 7410 # 5 Frames
 
 Y_SIZE_4 = 3660 # 
 X_SIZE_4 = 2435 #
 
-MAGNIFICATION = 4
+MAGNIFICATION = 2
 
 try:
     pr = prior(COM_PORT, DLL_PATH)
@@ -45,19 +45,22 @@ class App:
         self.map_canvas = Canvas(self.main_frame, bg="white")
         self.map_canvas.pack(fill=BOTH, expand=True)
 
-        self.map = np.zeros((3000, 3000), dtype=np.int8)
+        self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
+        self.filter_map = np.zeros((3000, 3000), dtype=np.int8)
 
         self.img_label = Label(self.main_frame, bg="#f0f0f0")
         self.img_label.pack(fill=BOTH, expand=True)
 
-        self.view_mode = "Camera View"
-        self.set_view(self.view_mode)
+        self.filter_on = False
+        self.view_mode = None
+        self.set_view("Camera View", False)
 
-        self.init_map_display()
         self.init_live_display()
         self.init_menu_bar()
         self.init_info_panel()
         self.init_settings_panel()
+
+        self.scan_running = False
 
         self.hcam = None
         self.buf = None
@@ -67,15 +70,17 @@ class App:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def init_map_display(self):
-        map_norm = ((self.map - self.map.min()) / max(self.map.max() - self.map.min(), 1) * 255).astype(np.uint8)
-        self.map_image = Image.fromarray(map_norm)
+    def display_map(self):
+        if self.filter_on:
+            self.map_image = Image.fromarray(self.filter_map.astype(np.uint8))
+        else:
+            self.map_image = Image.fromarray(self.true_map.astype(np.uint8))
 
         canvas_width = self.map_canvas.winfo_width()
         canvas_height = self.map_canvas.winfo_height()
 
         if canvas_width == 1 or canvas_height == 1:
-            self.map_canvas.bind("<Configure>", lambda e: self.init_map_display())
+            self.map_canvas.bind("<Configure>", lambda e: self.display_map())
             return
 
         img_ratio = self.map_image.width / self.map_image.height
@@ -107,11 +112,18 @@ class App:
         menubar.add_cascade(label="File", menu=filemenu)
 
         viewmenu = Menu(menubar, tearoff=0)
-        viewmenu.add_command(label="Map", command=lambda: self.set_view("Map"))
-        livemenu = Menu(viewmenu, tearoff=0)
-        livemenu.add_command(label="Camera View", command=lambda: self.set_view("Camera View"))
-        livemenu.add_command(label="Filter", command=lambda: self.set_view("Filter"))
-        viewmenu.add_cascade(label="Live", menu=livemenu)
+
+        mapmenu = Menu(viewmenu, tearoff=0)
+        mapmenu.add_radiobutton(label="No Filter", command=lambda: self.set_view("Map", False))
+        mapmenu.add_radiobutton(label="Filter", command=lambda: self.set_view("Map", True))
+
+        cameramenu = Menu(viewmenu, tearoff=0)
+        cameramenu.add_radiobutton(label="No Filter", command=lambda: self.set_view("Camera View", False))
+        cameramenu.add_radiobutton(label="Filter", command=lambda: self.set_view("Camera View", True))
+
+        viewmenu.add_cascade(label="Map", menu=mapmenu)
+        viewmenu.add_cascade(label="Camera View", menu=cameramenu)
+
         menubar.add_cascade(label="View", menu=viewmenu)
 
         menubar.add_command(label="Settings", command=self.open_settings)
@@ -234,11 +246,14 @@ class App:
         print("Scan running...")
 
         start_time = time.time()
+        self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
+        self.filter_map = np.zeros((3000, 3000), dtype=np.int8)
+        self.scan_running = True
 
         global x_pos, y_pos
 
-        num_steps_x = 4
-        num_steps_y = 7
+        num_steps_x = 5
+        num_steps_y = 5
         total_frames = max(num_steps_x, num_steps_y) ** 2
 
         center_x = x_pos
@@ -277,28 +292,32 @@ class App:
             time.sleep(1)
 
             img = self.capture_frame()
+            img = np.flipud(img)
+            img = np.fliplr(img)
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            binary = chip_edge_classifier.chip_filter(img)
-            img_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
-            img_rgb = np.fliplr(img_rgb)
+            binary = chip_edge_classifier.chip_filter(img, display=False)
+            img_binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
 
             if self.view_mode == "Camera View":
                 self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
             elif self.view_mode == "Filter":
                 self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
 
-            map_x = self.map.shape[1] // 2 + offset_x * X_SIZE_2 // zoom
-            map_y = self.map.shape[0] // 2 + offset_y * Y_SIZE_2 // zoom
+            map_x = int(self.filter_map.shape[1] / 2 + (offset_x - 0.5) * img_binary_rgb.shape[1] / zoom)
+            map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_binary_rgb.shape[0] / zoom)
 
-            h, w = img_rgb.shape[:2]
-            img_small = img_rgb[::zoom, ::zoom, 0]
+            h, w = img_binary_rgb.shape[:2]
+            img_small = img_rgb[::zoom, ::zoom]
+            img_binary_small = img_binary_rgb[::zoom, ::zoom, 0]
 
             x_start = max(0, map_x)
             y_start = max(0, map_y)
-            x_end = min(self.map.shape[1], x_start + img_small.shape[1])
-            y_end = min(self.map.shape[0], y_start + img_small.shape[0])
+            x_end = min(self.filter_map.shape[1], x_start + img_binary_small.shape[1])
+            y_end = min(self.filter_map.shape[0], y_start + img_binary_small.shape[0])
 
-            self.map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
+            self.true_map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
+            self.filter_map[y_start:y_end, x_start:x_end] = img_binary_small[:y_end - y_start, :x_end - x_start]
 
             elapsed = time.time() - start_time
             elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
@@ -307,8 +326,8 @@ class App:
     
             self.update_scan_status(progress=progress_percent, elapsed_time=elapsed_str)
 
-            time.sleep(1)
-
+        self.scan_running = False
+        pr.go_to_pos(center_x, center_y)
         print("Scan finished!")
 
     def update_scan_status(self, progress=None, elapsed_time=None, magnification=None):
@@ -321,26 +340,25 @@ class App:
         if elapsed_time is not None:
             self.info_time_label.config(text=f"Time Elapsed: {elapsed_time}")
 
-        self.init_map_display()
+        self.display_map()
         self.info_panel_border.update()
 
-    def set_view(self, mode):
+    def set_view(self, mode, filter_status):
         self.view_mode = mode
-    
+
+        self.filter_on = filter_status
+
         if mode == "Map":
+            self.display_map()
             self.map_canvas.pack(fill=BOTH, expand=True) # Show map canvas
             self.img_label.pack_forget() # Hide image label
             pass
         else:
             self.img_label.pack(fill=BOTH, expand=True)
             self.map_canvas.pack_forget() # Hide map canvas
-            if mode == "Camera View":
-                pass 
-            elif mode == "Filter":
-                pass
 
     def draw_map(self):
-        map_img = Image.fromarray((self.map * 255).astype(np.uint8), mode="L")
+        map_img = Image.fromarray((self.filter_map * 255).astype(np.uint8), mode="L")
 
         canvas_w = self.map_canvas.winfo_width()
         canvas_h = self.map_canvas.winfo_height()
@@ -402,10 +420,11 @@ class App:
     
             if self.view_mode == "Map": return
             
-            if self.view_mode == "Camera View":
-                self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            elif self.view_mode == "Filter":
-                self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
+            if self.view_mode == "Camera View" and not self.scan_running:
+                if self.filter_on:
+                    self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
+                else:
+                    self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     
         except amcam.HRESULTException as ex:
             print(f"Camera error: 0x{ex.hr:x}")

@@ -12,7 +12,7 @@ class prior():
         self.z_velocity = 2600
         self.z_acceleration = 134442
 
-        print("Initializing...")
+        print("Initializing Prior Stage Control...")
 
         if os.path.exists(self.path):
             global SDKPrior
@@ -80,7 +80,7 @@ class prior():
             self.cmd(f"controller.stage.speed.set {self.velocity}")
             self.cmd(f"controller.z.speed.set {self.z_velocity}")
 
-            print("Initializing!")
+            print("Initialized Prior Stage Control!")
 
         except Exception as e:
             
