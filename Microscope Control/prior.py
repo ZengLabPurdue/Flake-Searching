@@ -58,7 +58,7 @@ class prior():
 
             # initialization
             ## get pos
-            self.check_busy()
+            self.wait_until_not_busy()
             position = self.cmd("controller.stage.position.get")
             curr_pos = position[1]
             curr_pos_list = curr_pos.split(",")
@@ -73,7 +73,7 @@ class prior():
             #self.z_backlash_en, self.z_backlash_dist = self.get_z_backlash()
 
             ## set velocity and acceleration
-            self.check_busy()
+            self.wait_until_not_busy()
             self.cmd(f"controller.stage.acc.set {self.acceleration}")
             self.cmd(f"controller.z.acc.set {self.z_acceleration}")
 
@@ -99,20 +99,27 @@ class prior():
         '''
         return ret, rx.value.decode()
     
-    def check_busy(self):
-        # print(self.cmd("controller.stage.busy.get")[1])
-        while (self.cmd("controller.stage.busy.get")[1] == "2") | (self.cmd("controller.z.busy.get")[1] == "4") | (self.cmd("controller.stage.busy.get")[1] == "1") | (self.cmd("controller.stage.busy.get")[1] == "3"):
-            print("Controller is Busy\n")
-            time.sleep(0.25)
+    def wait_until_not_busy(self):
+        #print(self.cmd("controller.stage.busy.get")[1])
+        start_time = time.time()
+        while self.is_busy():
+            pass
+        end_time = time.time() - start_time
+        return end_time
+        
+    def is_busy(self):
+        if (self.cmd("controller.stage.busy.get")[1] == "2") | (self.cmd("controller.z.busy.get")[1] == "4") | (self.cmd("controller.stage.busy.get")[1] == "1") | (self.cmd("controller.stage.busy.get")[1] == "3"):
+            return True
+        else: return False
 
     def set_velocity(self, velocity):
-        self.check_busy()
+        self.wait_until_not_busy()
         self.velocity = velocity
         self.cmd(f"controller.stage.speed.set {self.velocity}")
         self.cmd("controller.stage.speed.get")
 
     def set_acceleration(self, acceleration):
-        self.check_busy()
+        self.wait_until_not_busy()
         self.acceleration = acceleration
         self.cmd(f"controller.stage.acc.set {self.acceleration}")
         self.cmd("controller.stage.acc.get")
@@ -120,13 +127,13 @@ class prior():
     def go_to_pos(self, new_x, new_y):
         self.x = new_x
         self.y = new_y
-        # self.check_busy()
+        self.wait_until_not_busy()
         self.cmd(f"controller.stage.goto-position {self.x} {self.y}")
         self.cmd("controller.stage.speed.get")
         # time.sleep(1)
 
     def get_curr_pos(self):
-        self.check_busy()
+        self.wait_until_not_busy()
         position = self.cmd("controller.stage.position.get")
         curr_pos = position[1].split(",")
         # print("curre_pos = ", curr_pos)
@@ -134,26 +141,26 @@ class prior():
         self.y = int(curr_pos[1])
 
     def set_z_velocity(self, velocity):
-        self.check_busy()
+        self.wait_until_not_busy()
         self.z_velocity = velocity
         self.cmd(f"controller.z.speed.set {self.velocity}")
         self.cmd("controller.z.speed.get")
 
     def set_z_acceleration(self, acceleration):
-        self.check_busy()
+        self.wait_until_not_busy()
         self.z_acceleration = acceleration
         self.cmd(f"controller.z.acc.set {self.acceleration}")
         self.cmd("controller.z.acc.get")
 
     def go_to_z_pos(self, new_z):
         self.z = new_z
-        # self.check_busy()
+        # self.wait_until_not_busy()
         self.cmd(f"controller.z.goto-position {self.z}")
         self.cmd("controller.z.speed.get")
         # time.sleep(1)
 
     def get_curr_z_pos(self):
-        self.check_busy()
+        self.wait_until_not_busy()
         position = self.cmd("controller.z.position.get")
         self.z = int(position[1])
         return self.z
@@ -206,5 +213,5 @@ class prior():
         self.cmd(f"controller.z.backlash.set {self.z_backlash_en} {self.z_backlash_dist}")
 
     def disconnect(self):
-        self.check_busy()
+        self.wait_until_not_busy()
         self.cmd("controller.disconnect")

@@ -18,11 +18,11 @@ DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 COM_PORT = sys.argv[1]
 DEFAULT_EXPOSURE = 60
 
-X_SIZE_2 = 4635 # 5 Frames
-Y_SIZE_2 = 7410 # 5 Frames
+X_SIZE_2 = 7410 # 6 Frames
+Y_SIZE_2 = 4635 # 6 Frames
 
-Y_SIZE_4 = 3660 # 
-X_SIZE_4 = 2435 #
+Y_SIZE_4 = 3660 
+X_SIZE_4 = 2435
 
 MAGNIFICATION = 2
 
@@ -241,7 +241,7 @@ class App:
     def open_settings(self):
         pass
 
-    def run_scan(self, zoom=10):
+    def run_scan(self, zoom=25):
 
         print("Scan running...")
 
@@ -252,44 +252,24 @@ class App:
 
         global x_pos, y_pos
 
-        num_steps_x = 5
-        num_steps_y = 5
-        total_frames = max(num_steps_x, num_steps_y) ** 2
+        num_steps_x = 6
+        num_steps_y = 6
 
         center_x = x_pos
         center_y = y_pos
 
-        spiral_coords = []
-        dx, dy = 0, 0
-        step = 1
-        direction = 0
-
-        while len(spiral_coords) < total_frames:
-            for _ in range(2):
-                for _ in range(step):
-                    if len(spiral_coords) >= total_frames:
-                        break
-                    spiral_coords.append((dx, dy))
-                    if direction == 0:
-                        dx += 1
-                    elif direction == 1:
-                        dy += 1
-                    elif direction == 2:
-                        dx -= 1
-                    else:
-                        dy -= 1
-                direction = (direction + 1) % 4
-            step += 1
+        #coords, total_frames = self.generate_spiral_coords(max(num_steps_x, num_steps_y))
+        coords, total_frames = self.generate_rect_coords(19, 9)
 
         i = 0
-        for offset_x, offset_y in spiral_coords:
+        for offset_x, offset_y in coords:
             target_x = center_x + offset_x * X_SIZE_2
             target_y = center_y - offset_y * Y_SIZE_2 
 
             pr.go_to_pos(target_x, target_y)
             x_pos, y_pos = target_x, target_y
 
-            time.sleep(1)
+            print(f"Move Time: {pr.wait_until_not_busy()}")
 
             img = self.capture_frame()
             img = np.flipud(img)
@@ -329,6 +309,45 @@ class App:
         self.scan_running = False
         pr.go_to_pos(center_x, center_y)
         print("Scan finished!")
+
+    def generate_rect_coords(self, x, y):
+        
+        rect_coords = []
+        total_frames = x * y
+
+        for i in range(x):
+            for j in range(y):
+                rect_coords.append((i - x // 2, j - y // 2))
+
+        return rect_coords, total_frames
+
+    def generate_spiral_coords(self, length):
+
+        spiral_coords = []
+        total_frames = length ** 2
+
+        dx, dy = 0, 0
+        step = 1
+        direction = 0
+
+        while len(spiral_coords) < total_frames:
+            for _ in range(2):
+                for _ in range(step):
+                    if len(spiral_coords) >= total_frames:
+                        break
+                    spiral_coords.append((dx, dy))
+                    if direction == 0:
+                        dx += 1
+                    elif direction == 1:
+                        dy += 1
+                    elif direction == 2:
+                        dx -= 1
+                    else:
+                        dy -= 1
+                direction = (direction + 1) % 4
+            step += 1
+
+        return spiral_coords, total_frames
 
     def update_scan_status(self, progress=None, elapsed_time=None, magnification=None):
         if magnification is not None:

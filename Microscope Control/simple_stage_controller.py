@@ -26,6 +26,8 @@ try:
     pr.get_curr_pos()
     x_pos = pr.x
     y_pos = pr.y
+    start_x = x_pos
+    start_y = y_pos
     print("Connected to Prior stage")
 except Exception as e:
     print("Failed to connect to Prior:", e)
@@ -50,7 +52,10 @@ class App:
         self.img_label = Label(self.main_frame, bg="black")
         self.img_label.pack(fill=BOTH, expand=True)
 
-        self.step_size = 5
+        self.step_size = 1000
+        self.hold_speed = 2600
+        self.hold_job = None
+        self.is_hold = False
 
         self.init_manual_control_button_panel()
         self.init_capture_image_panel()
@@ -70,7 +75,7 @@ class App:
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=184
+            height=274
         )
         self.manual_control_border.place(relx=1.0, rely=0.0, anchor="ne", y=-2)
 
@@ -78,7 +83,7 @@ class App:
             self.manual_control_border,
             bg="white",
             width=200,
-            height=182
+            height=272
         )
         self.manual_control_panel.place(x=2, y=0)
 
@@ -99,7 +104,7 @@ class App:
         )
         step_label.place(relx=0.0, rely=0.0, x=80, y=45, anchor="n")
 
-        self.step_size_var = StringVar(value=str(self.step_size))  # bind to current step size
+        self.step_size_var = StringVar(value=str(self.step_size))
         self.step_entry = ttk.Entry(
             self.manual_control_border,
             textvariable=self.step_size_var,
@@ -107,13 +112,50 @@ class App:
         )
         self.step_entry.place(relx=0.0, rely=0.0, x=150, y=45, anchor="n")
 
+        hold_speed_label = Label(
+            self.manual_control_border,
+            text="Hold Speed (µm/s):",
+            bg="white",
+            fg="black"
+        )
+        hold_speed_label.place(relx=0.0, rely=0.0, x=70, y=75, anchor="n")
+
+        self.hold_speed_var = StringVar(value=str(self.hold_speed))
+        self.hold_speed_var.trace_add("write", self.on_hold_speed_change)
+        self.hold_speed_entry = ttk.Entry(
+            self.manual_control_border,
+            textvariable=self.hold_speed_var,
+            width=5
+        )
+        self.hold_speed_entry.place(relx=0.0, rely=0.0, x=150, y=75, anchor="n")
+
+        self.x_coord_label = Label(
+            self.manual_control_border,
+            text=f"x: {x_pos}",
+            bg="white",
+            fg="black",
+            width=12,
+            anchor="w"
+        )
+        self.x_coord_label.place(relx=0.0, rely=0.0, x=120, y=105, anchor="n")
+
+        self.y_coord_label = Label(
+            self.manual_control_border,
+            text=f"y: {y_pos}",
+            bg="white",
+            fg="black",
+            width=12,
+            anchor="w"
+        )
+        self.y_coord_label.place(relx=0.0, rely=0.0, x=120, y=135, anchor="n")
+
         self.manual_control_button_panel = Frame(
             self.manual_control_border,
             bg="white",
             width=120, 
             height=90 
         )
-        self.manual_control_button_panel.place(relx=0.5, x=0, y=80, anchor="n")
+        self.manual_control_button_panel.place(relx=0.5, x=0, y=165, anchor="n")
         self.manual_control_button_panel.pack_propagate(False)
 
         style = ttk.Style()
@@ -124,10 +166,19 @@ class App:
         controls = Frame(self.manual_control_button_panel, bg="white")
         controls.pack(expand=True, fill="both")
 
-        self.btn_up = ttk.Button(controls, text="▴", style="Arrow.TButton", command=self.move_up)
-        self.btn_down = ttk.Button(controls, text="▾", style="Arrow.TButton", command=self.move_down)
-        self.btn_left = ttk.Button(controls, text="◂", style="Arrow.TButton", command=self.move_left)
-        self.btn_right = ttk.Button(controls, text="▸", style="Arrow.TButton", command=self.move_right)
+        self.btn_up = ttk.Button(controls, text="▴", style="Arrow.TButton")
+        self.btn_down = ttk.Button(controls, text="▾", style="Arrow.TButton")
+        self.btn_left = ttk.Button(controls, text="◂", style="Arrow.TButton")
+        self.btn_right = ttk.Button(controls, text="▸", style="Arrow.TButton")
+
+        self.btn_up.bind("<ButtonPress-1>", self.on_press_up)
+        self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
+        self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
+        self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+        self.btn_left.bind("<ButtonPress-1>", self.on_press_left)
+        self.btn_left.bind("<ButtonRelease-1>", self.on_release_left)
+        self.btn_right.bind("<ButtonPress-1>", self.on_press_right)
+        self.btn_right.bind("<ButtonRelease-1>", self.on_release_right)
 
         for r in [0, 1]:
             controls.rowconfigure(r, weight=1)
@@ -147,7 +198,7 @@ class App:
             width=204,
             height=80
         )
-        self.capture_panel_border.place(relx=1.0, rely=0.0, anchor="ne", y=182)
+        self.capture_panel_border.place(relx=1.0, rely=0.0, anchor="ne", y=272)
 
         self.capture_panel = Frame(
             self.capture_panel_border,
@@ -185,7 +236,7 @@ class App:
             width=204,
             height=100
         )
-        self.adjust_exposure_border.place(relx=1.0, rely=0.0, anchor="ne", y=262)
+        self.adjust_exposure_border.place(relx=1.0, rely=0.0, anchor="ne", y=352)
 
         self.adjust_exposure_panel = Frame(
             self.adjust_exposure_border,
@@ -228,25 +279,108 @@ class App:
         )
         self.exposure_value_label.place(relx=0.5, y=70, anchor="n")
 
-    def move_up(self):
-        global y_pos
-        y_pos -= int(self.step_entry.get())
-        pr.go_to_pos(x_pos, y_pos)
+    def get_position(self):
+        global x_pos, y_pos
+        pr.get_curr_pos()
+        x_pos = pr.x
+        y_pos = pr.y
+        self.x_coord_label.config(text=f"x: {x_pos}")
+        self.y_coord_label.config(text=f"y: {y_pos}")
 
-    def move_down(self):
-        global y_pos
-        y_pos += int(self.step_entry.get())
-        pr.go_to_pos(x_pos, y_pos)
+    def start_hold_up(self):
+        self.is_hold = True
+        pr.start_forward_y_motor()
 
-    def move_left(self):
-        global x_pos
-        x_pos -= int(self.step_entry.get())
-        pr.go_to_pos(x_pos, y_pos)
+    def on_press_up(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_up)
 
-    def move_right(self):
-        global x_pos
-        x_pos += int(self.step_entry.get())
-        pr.go_to_pos(x_pos, y_pos)
+    def on_release_up(self, event):
+
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+
+        if self.is_hold:
+            pr.stop_y_motor()   # stop continuous motion
+        else:
+            global y_pos
+            y_pos -= int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def start_hold_down(self):
+        self.is_hold = True
+        pr.start_backward_y_motor()
+
+    def on_press_down(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_down)
+
+    def on_release_down(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pr.stop_y_motor()
+        else:
+            global y_pos
+            y_pos += int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def start_hold_left(self):
+        self.is_hold = True
+        pr.start_backward_x_motor()
+
+    def on_press_left(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_left)
+
+    def on_release_left(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pr.stop_x_motor()
+        else:
+            global x_pos
+            x_pos -= int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def start_hold_right(self):
+        self.is_hold = True
+        pr.start_forward_x_motor()
+
+    def on_press_right(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_right)
+
+    def on_release_right(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pr.stop_x_motor()
+        else:
+            global x_pos
+            x_pos += int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def on_hold_speed_change(self, *args):
+        try:
+            speed = int(self.hold_speed_var.get())
+            pr.set_velocity(speed)
+        except ValueError:
+            pass
 
     def adjust_exposure(self, exposure):
         self.hcam.put_AutoExpoTarget(int(float(exposure)))
