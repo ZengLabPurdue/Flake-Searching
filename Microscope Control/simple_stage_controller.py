@@ -75,7 +75,7 @@ class App:
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=274
+            height=364
         )
         self.manual_control_border.place(relx=1.0, rely=0.0, anchor="ne", y=-2)
 
@@ -83,7 +83,7 @@ class App:
             self.manual_control_border,
             bg="white",
             width=200,
-            height=272
+            height=362
         )
         self.manual_control_panel.place(x=2, y=0)
 
@@ -96,58 +96,102 @@ class App:
         )
         title_label.place(relx=0.5, y=10, anchor="n")
 
+        label_x = 10
+        entry_x = 130
+
         step_label = Label(
             self.manual_control_border,
             text="Step Size (µm):",
             bg="white",
-            fg="black"
+            fg="black",
+            width=15,
+            anchor="e"
         )
-        step_label.place(relx=0.0, rely=0.0, x=80, y=45, anchor="n")
+        step_label.place(relx=0.0, rely=0.0, x=label_x, y=45)
 
         self.step_size_var = StringVar(value=str(self.step_size))
         self.step_entry = ttk.Entry(
             self.manual_control_border,
             textvariable=self.step_size_var,
-            width=5
+            width=8
         )
-        self.step_entry.place(relx=0.0, rely=0.0, x=150, y=45, anchor="n")
+        self.step_entry.place(relx=0.0, rely=0.0, x=entry_x, y=45)
 
         hold_speed_label = Label(
             self.manual_control_border,
             text="Hold Speed (µm/s):",
             bg="white",
-            fg="black"
+            fg="black",
+            width=15,
+            anchor="e"
         )
-        hold_speed_label.place(relx=0.0, rely=0.0, x=70, y=75, anchor="n")
+        hold_speed_label.place(relx=0.0, rely=0.0, x=label_x, y=75)
 
         self.hold_speed_var = StringVar(value=str(self.hold_speed))
         self.hold_speed_var.trace_add("write", self.on_hold_speed_change)
         self.hold_speed_entry = ttk.Entry(
             self.manual_control_border,
             textvariable=self.hold_speed_var,
-            width=5
+            width=8
         )
-        self.hold_speed_entry.place(relx=0.0, rely=0.0, x=150, y=75, anchor="n")
+        self.hold_speed_entry.place(relx=0.0, rely=0.0, x=entry_x, y=75)
 
-        self.x_coord_label = Label(
+        x_label = Label(
             self.manual_control_border,
-            text=f"x: {x_pos}",
+            text="X (µm):",
             bg="white",
             fg="black",
-            width=12,
-            anchor="w"
+            width=15,
+            anchor="e"
         )
-        self.x_coord_label.place(relx=0.0, rely=0.0, x=120, y=105, anchor="n")
+        x_label.place(relx=0.0, rely=0.0, x=label_x, y=105)
 
-        self.y_coord_label = Label(
+        self.x_coord_var = StringVar(value=str(x_pos))
+        self.x_coord_entry = ttk.Entry(
             self.manual_control_border,
-            text=f"y: {y_pos}",
+            textvariable=self.x_coord_var,
+            width=8
+        )
+        self.x_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=105)
+
+        y_label = Label(
+            self.manual_control_border,
+            text="Y (µm):",
             bg="white",
             fg="black",
-            width=12,
-            anchor="w"
+            width=15,
+            anchor="e"
         )
-        self.y_coord_label.place(relx=0.0, rely=0.0, x=120, y=135, anchor="n")
+        y_label.place(relx=0.0, rely=0.0, x=label_x, y=135)
+
+        self.y_coord_var = StringVar(value=str(y_pos))
+        self.y_coord_entry = ttk.Entry(
+            self.manual_control_border,
+            textvariable=self.y_coord_var,
+            width=8
+        )
+        self.y_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=135)
+
+        style = ttk.Style()
+        style.configure("Normal.TButton", font="TkDefaultFont")
+        style.configure("Normal.TButton", background="white")
+        style.configure("Normal.TButton", relief="flat")
+
+        self.reset_button = ttk.Button(
+            self.manual_control_border,
+            text="Set Origin",
+            style="Normal.TButton",
+            command=self.set_origin
+        )
+        self.reset_button.place(relx=0.5, y=170, anchor="n")
+
+        self.move_to_button = ttk.Button(
+            self.manual_control_border,
+            text="Move to (x,y)",
+            style="Normal.TButton",
+            command=self.go_to_position
+        )
+        self.move_to_button.place(relx=0.5, y=205, anchor="n")
 
         self.manual_control_button_panel = Frame(
             self.manual_control_border,
@@ -155,16 +199,16 @@ class App:
             width=120, 
             height=90 
         )
-        self.manual_control_button_panel.place(relx=0.5, x=0, y=165, anchor="n")
+        self.manual_control_button_panel.place(relx=0.5, x=0, y=245, anchor="n")
         self.manual_control_button_panel.pack_propagate(False)
+
+        controls = Frame(self.manual_control_button_panel, bg="white")
+        controls.pack(expand=True, fill="both")
 
         style = ttk.Style()
         style.configure("Arrow.TButton", font=("TkDefaultFont", 15), padding=5)
         style.configure("Arrow.TButton", background="white")
         style.configure("Arrow.TButton", relief="flat")
-
-        controls = Frame(self.manual_control_button_panel, bg="white")
-        controls.pack(expand=True, fill="both")
 
         self.btn_up = ttk.Button(controls, text="▴", style="Arrow.TButton")
         self.btn_down = ttk.Button(controls, text="▾", style="Arrow.TButton")
@@ -198,7 +242,7 @@ class App:
             width=204,
             height=80
         )
-        self.capture_panel_border.place(relx=1.0, rely=0.0, anchor="ne", y=272)
+        self.capture_panel_border.place(relx=1.0, rely=0.0, anchor="ne", y=362)
 
         self.capture_panel = Frame(
             self.capture_panel_border,
@@ -236,7 +280,7 @@ class App:
             width=204,
             height=100
         )
-        self.adjust_exposure_border.place(relx=1.0, rely=0.0, anchor="ne", y=352)
+        self.adjust_exposure_border.place(relx=1.0, rely=0.0, anchor="ne", y=442)
 
         self.adjust_exposure_panel = Frame(
             self.adjust_exposure_border,
@@ -279,13 +323,21 @@ class App:
         )
         self.exposure_value_label.place(relx=0.5, y=70, anchor="n")
 
+    def set_origin(self):
+        pr.set_origin()
+        self.get_position()
+
+    def go_to_position(self):
+        pr.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
+        self.get_position()
+
     def get_position(self):
         global x_pos, y_pos
         pr.get_curr_pos()
         x_pos = pr.x
         y_pos = pr.y
-        self.x_coord_label.config(text=f"x: {x_pos}")
-        self.y_coord_label.config(text=f"y: {y_pos}")
+        self.x_coord_var.set(str(x_pos))
+        self.y_coord_var.set(str(y_pos))
 
     def start_hold_up(self):
         self.is_hold = True

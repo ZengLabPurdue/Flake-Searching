@@ -164,6 +164,9 @@ class prior():
         position = self.cmd("controller.z.position.get")
         self.z = int(position[1])
         return self.z
+    
+    def set_origin(self):
+        self.cmd("controller.stage.position.set 0 0")
 
     def start_forward_x_motor(self):
         self.cmd(f"controller.stage.move-at-velocity {self.velocity} 0")
