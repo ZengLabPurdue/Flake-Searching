@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -55,102 +56,110 @@ class App:
         self.view_mode = None
         self.set_view("Camera View", False)
 
-        self.init_live_display()
-        self.init_menu_bar()
-        self.init_info_panel()
-        self.init_settings_panel()
-
         self.scan_running = False
+
+        self.step_size = 1000
+        self.hold_speed = 2600
+        self.hold_job = None
+        self.is_hold = False
 
         self.hcam = None
         self.buf = None
         self.prevImg = None
         self.width = 0
         self.height = 0
+        
+        self.panels = []
+
+        self.panels.append({
+            "name": "Info Panel",
+            "frame": self.init_info_panel(),
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Control Panel",
+            "frame": self.init_manual_control_panel(),
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Capture Image Panel",
+            "frame": self.init_capture_image_panel(),
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Adjust Exposure Panel",
+            "frame": self.init_adjust_exposure_panel(),
+            "var": BooleanVar(value=False)
+        })
+
+        self.update_panels()
+
+        self.init_menu_bar()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def display_map(self):
-        if self.filter_on:
-            self.map_image = Image.fromarray(self.filter_map.astype(np.uint8))
-        else:
-            self.map_image = Image.fromarray(self.true_map.astype(np.uint8))
-
-        canvas_width = self.map_canvas.winfo_width()
-        canvas_height = self.map_canvas.winfo_height()
-
-        if canvas_width == 1 or canvas_height == 1:
-            self.map_canvas.bind("<Configure>", lambda e: self.display_map())
-            return
-
-        img_ratio = self.map_image.width / self.map_image.height
-        canvas_ratio = canvas_width / canvas_height
-
-        if img_ratio > canvas_ratio:
-            new_width = canvas_width
-            new_height = int(canvas_width / img_ratio)
-        else:
-            new_height = canvas_height
-            new_width = int(canvas_height * img_ratio)
-
-        img_resized = self.map_image.resize((new_width, new_height), Image.NEAREST)
-        self.tk_map_image = ImageTk.PhotoImage(img_resized)
-
-        self.map_canvas.delete("all")
-
-        x_center = canvas_width // 2
-        y_center = canvas_height // 2
-        self.map_canvas.create_image(x_center, y_center, image=self.tk_map_image, anchor="center")
-    
-    def init_live_display(self):
-        pass
+    # ------------- Initialization -------------
 
     def init_menu_bar(self):
-        menubar = Menu(root)
-        filemenu = Menu(menubar, tearoff=0)
-        filemenu.add_command(label="Quit", command=self.on_close)
-        menubar.add_cascade(label="File", menu=filemenu)
+        menu_bar = Menu(root)
+        file_menu = Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Quit", command=self.on_close)
+        menu_bar.add_cascade(label="File", menu=file_menu)
 
-        viewmenu = Menu(menubar, tearoff=0)
+        view_menu = Menu(menu_bar, tearoff=0)
 
-        mapmenu = Menu(viewmenu, tearoff=0)
-        mapmenu.add_radiobutton(label="No Filter", command=lambda: self.set_view("Map", False))
-        mapmenu.add_radiobutton(label="Filter", command=lambda: self.set_view("Map", True))
+        map_menu = Menu(view_menu, tearoff=0)
+        map_menu.add_radiobutton(label="No Filter", command=lambda: self.set_view("Map", False))
+        map_menu.add_radiobutton(label="Filter", command=lambda: self.set_view("Map", True))
 
-        cameramenu = Menu(viewmenu, tearoff=0)
-        cameramenu.add_radiobutton(label="No Filter", command=lambda: self.set_view("Camera View", False))
-        cameramenu.add_radiobutton(label="Filter", command=lambda: self.set_view("Camera View", True))
+        camera_menu = Menu(view_menu, tearoff=0)
+        camera_menu.add_radiobutton(label="No Filter", command=lambda: self.set_view("Camera View", False))
+        camera_menu.add_radiobutton(label="Filter", command=lambda: self.set_view("Camera View", True))
 
-        viewmenu.add_cascade(label="Map", menu=mapmenu)
-        viewmenu.add_cascade(label="Camera View", menu=cameramenu)
+        view_menu.add_cascade(label="Map", menu=map_menu)
+        view_menu.add_cascade(label="Camera View", menu=camera_menu)
 
-        menubar.add_cascade(label="View", menu=viewmenu)
+        menu_bar.add_cascade(label="View", menu=view_menu)
 
-        menubar.add_command(label="Settings", command=self.open_settings)
-        menubar.add_command(label="Run Scan", command=self.run_scan)
+        panel_menu = Menu(menu_bar, tearoff=0)
 
-        root.config(menu=menubar)
+        for panel in self.panels:
+            panel_menu.add_checkbutton(
+                label=panel["name"],
+                variable=panel["var"],
+                command=self.update_panels
+            )
+
+        menu_bar.add_cascade(label="Panels", menu=panel_menu)
+        menu_bar.add_command(label="Run Scan", command=self.run_scan)
+
+        root.config(menu=menu_bar)
+
+    # Panel Initialization 
 
     def init_info_panel(self):
 
-        self.info_panel_border = Frame(
+        self.info_panel = Frame(
             self.main_frame,
             bg="#f0f0f0",
             width=204,
             height=114
         )
-        self.info_panel_border.place(relx=1.0, rely=0.0, anchor="ne", y=-2)
+        self.info_panel.place(relx=1.0, rely=0.0, anchor="ne")
 
-        self.info_panel = Frame(
-            self.info_panel_border,
+        self.info_background = Frame(
+            self.info_panel,
             bg="white",
             width=200,
             height=112
         )
-        self.info_panel.place(x=2, y=0)
+        self.info_background.place(x=2, y=0)
 
         title_label = Label(
-            self.info_panel_border,
+            self.info_panel,
             text="Info",
             bg="white",
             fg="black",
@@ -159,7 +168,7 @@ class App:
         title_label.place(relx=0.5, y=10, anchor="n")
 
         self.info_magnification_label = Label(
-            self.info_panel_border,
+            self.info_panel,
             text=f"Magnification: {MAGNIFICATION}x",
             bg="white",
             fg="black"
@@ -168,7 +177,7 @@ class App:
 
 
         self.info_progress_label = Label(
-            self.info_panel_border,
+            self.info_panel,
             text="Progress: Not Started",
             bg="white",
             fg="black"
@@ -177,32 +186,242 @@ class App:
 
 
         self.info_time_label = Label(
-            self.info_panel_border,
+            self.info_panel,
             text="Time Elapsed: Not Started",
             bg="white",
             fg="black"
         )
         self.info_time_label.place(relx=0.5, y=75, anchor="n")
 
-    def init_settings_panel(self):
-        self.settings_border = Frame(
+        return self.info_panel
+
+    def init_manual_control_panel(self):
+
+        self.manual_control_panel = Frame(
+            self.main_frame,
+            bg="#f0f0f0",
+            width=204,
+            height=354
+        )
+        self.manual_control_panel.place(relx=1.0, rely=0.0, anchor="ne")
+
+        self.manual_control_background = Frame(
+            self.manual_control_panel,
+            bg="white",
+            width=200,
+            height=352
+        )
+        self.manual_control_background.place(x=2, y=0)
+
+        title_label = Label(
+            self.manual_control_panel,
+            text="Manual Control",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 13)
+        )
+        title_label.place(relx=0.5, y=10, anchor="n")
+
+        label_x = 10
+        entry_x = 130
+
+        step_label = Label(
+            self.manual_control_panel,
+            text="Step Size (µm):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        step_label.place(relx=0.0, rely=0.0, x=label_x, y=45)
+
+        self.step_size_var = StringVar(value=str(self.step_size))
+        self.step_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.step_size_var,
+            width=8
+        )
+        self.step_entry.place(relx=0.0, rely=0.0, x=entry_x, y=45)
+
+        hold_speed_label = Label(
+            self.manual_control_panel,
+            text="Hold Speed (µm/s):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        hold_speed_label.place(relx=0.0, rely=0.0, x=label_x, y=75)
+
+        self.hold_speed_var = StringVar(value=str(self.hold_speed))
+        self.hold_speed_var.trace_add("write", self.on_hold_speed_change)
+        self.hold_speed_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.hold_speed_var,
+            width=8
+        )
+        self.hold_speed_entry.place(relx=0.0, rely=0.0, x=entry_x, y=75)
+
+        x_label = Label(
+            self.manual_control_panel,
+            text="X (µm):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        x_label.place(relx=0.0, rely=0.0, x=label_x, y=105)
+
+        self.x_coord_var = StringVar(value=str(x_pos))
+        self.x_coord_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.x_coord_var,
+            width=8
+        )
+        self.x_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=105)
+
+        y_label = Label(
+            self.manual_control_panel,
+            text="Y (µm):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        y_label.place(relx=0.0, rely=0.0, x=label_x, y=135)
+
+        self.y_coord_var = StringVar(value=str(y_pos))
+        self.y_coord_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.y_coord_var,
+            width=8
+        )
+        self.y_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=135)
+
+        style = ttk.Style()
+        style.configure("Normal.TButton", font="TkDefaultFont")
+        style.configure("Normal.TButton", background="white")
+        style.configure("Normal.TButton", relief="flat")
+
+        self.reset_button = ttk.Button(
+            self.manual_control_panel,
+            text="Set Origin",
+            style="Normal.TButton",
+            command=self.set_origin
+        )
+        self.reset_button.place(relx=0.5, y=170, anchor="n")
+
+        self.move_to_button = ttk.Button(
+            self.manual_control_panel,
+            text="Move to (x,y)",
+            style="Normal.TButton",
+            command=self.go_to_position
+        )
+        self.move_to_button.place(relx=0.5, y=205, anchor="n")
+
+        self.manual_control_button_panel = Frame(
+            self.manual_control_panel,
+            bg="white",
+            width=120, 
+            height=90 
+        )
+        self.manual_control_button_panel.place(relx=0.5, x=0, y=240, anchor="n")
+        self.manual_control_button_panel.pack_propagate(False)
+
+        controls = Frame(self.manual_control_button_panel, bg="white")
+        controls.pack(expand=True, fill="both")
+
+        style = ttk.Style()
+        style.configure("Arrow.TButton", font=("TkDefaultFont", 15), padding=5)
+        style.configure("Arrow.TButton", background="white")
+        style.configure("Arrow.TButton", relief="flat")
+
+        self.btn_up = ttk.Button(controls, text="▴", style="Arrow.TButton")
+        self.btn_down = ttk.Button(controls, text="▾", style="Arrow.TButton")
+        self.btn_left = ttk.Button(controls, text="◂", style="Arrow.TButton")
+        self.btn_right = ttk.Button(controls, text="▸", style="Arrow.TButton")
+
+        self.btn_up.bind("<ButtonPress-1>", self.on_press_up)
+        self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
+        self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
+        self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+        self.btn_left.bind("<ButtonPress-1>", self.on_press_left)
+        self.btn_left.bind("<ButtonRelease-1>", self.on_release_left)
+        self.btn_right.bind("<ButtonPress-1>", self.on_press_right)
+        self.btn_right.bind("<ButtonRelease-1>", self.on_release_right)
+
+        for r in [0, 1]:
+            controls.rowconfigure(r, weight=1)
+        for c in [0, 1, 2]:
+            controls.columnconfigure(c, weight=1)
+
+        self.btn_up.grid(row=0, column=1, sticky="nsew")
+        self.btn_left.grid(row=1, column=0, sticky="nsew")
+        self.btn_right.grid(row=1, column=2, sticky="nsew")
+        self.btn_down.grid(row=1, column=1, sticky="nsew")
+
+        return self.manual_control_panel
+
+    def init_capture_image_panel(self):
+
+        self.capture_panel = Frame(
+            self.main_frame,
+            bg="#f0f0f0",
+            width=204,
+            height=80
+        )
+        self.capture_panel.place(relx=1.0, rely=0.0, anchor="ne")
+
+        self.capture_background = Frame(
+            self.capture_panel,
+            bg="white",
+            width=200,
+            height=78
+        )
+        self.capture_background.place(x=2, y=0)
+
+        capture_title = Label(
+            self.capture_panel,
+            text="Image Capture",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 13)
+        )
+        capture_title.place(relx=0.5, y=5, anchor="n")
+
+        style = ttk.Style()
+        style.configure("Save.TButton", background="white")
+        style.configure("Save.TButton", relief="flat")
+
+        self.capture_button = ttk.Button(
+            self.capture_background,
+            text="Capture & Save",
+            style="Save.TButton",
+            command=self.save_image
+        )
+        self.capture_button.place(relx=0.5, y=50, anchor="center")
+
+        return self.capture_panel
+
+    def init_adjust_exposure_panel(self):
+        self.adjust_exposure_panel = Frame(
             self.main_frame,
             bg="#f0f0f0",
             width=204,
             height=100
         )
-        self.settings_border.place(relx=1.0, rely=0.0, anchor="ne", y=112)
+        self.adjust_exposure_panel.place(relx=1.0, rely=0.0, anchor="ne")
 
-        self.settings_panel = Frame(
-            self.settings_border,
+        self.adjust_exposure_background = Frame(
+            self.adjust_exposure_panel,
             bg="white",
             width=200,
             height=98
         )
-        self.settings_panel.place(x=2, y=0)
+        self.adjust_exposure_background.place(x=2, y=0)
 
         adjust_exposure_title = Label(
-            self.settings_border,
+            self.adjust_exposure_panel,
             text="Adjust Exposure",
             bg="white",
             fg="black",
@@ -215,7 +434,7 @@ class App:
 
         self.exposure_var = DoubleVar(value=DEFAULT_EXPOSURE)
         self.adjust_exposure_slider = ttk.Scale(
-            self.settings_panel,
+            self.adjust_exposure_background,
             from_=30,
             to=120,
             orient="horizontal",
@@ -226,7 +445,7 @@ class App:
         self.adjust_exposure_slider.place(relx=0.5, y=50, anchor="center")
 
         self.exposure_value_label = Label(
-            self.settings_panel,
+            self.adjust_exposure_background,
             text=f"Exposure: {DEFAULT_EXPOSURE}",
             bg="white",
             fg="black",
@@ -234,12 +453,122 @@ class App:
         )
         self.exposure_value_label.place(relx=0.5, y=70, anchor="n")
 
-    def adjust_exposure(self, exposure):
-        self.hcam.put_AutoExpoTarget(int(float(exposure)))
-        self.exposure_value_label.config(text=f"Exposure: {int(float(self.hcam.get_AutoExpoTarget()))}")
+        return self.adjust_exposure_panel
 
-    def open_settings(self):
-        pass
+    # ------------- Stage Control Functions -------------
+
+    def set_origin(self):
+        pr.set_origin()
+        self.get_position()
+
+    def go_to_position(self):
+        pr.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
+        self.get_position()
+
+    def get_position(self):
+        global x_pos, y_pos
+        pr.get_curr_pos()
+        x_pos = pr.x
+        y_pos = pr.y
+        self.x_coord_var.set(str(x_pos))
+        self.y_coord_var.set(str(y_pos))
+
+    def start_hold_up(self):
+        self.is_hold = True
+        pr.start_forward_y_motor()
+
+    def on_press_up(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_up)
+
+    def on_release_up(self, event):
+
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+
+        if self.is_hold:
+            pr.stop_y_motor()   # stop continuous motion
+        else:
+            global y_pos
+            y_pos -= int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def start_hold_down(self):
+        self.is_hold = True
+        pr.start_backward_y_motor()
+
+    def on_press_down(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_down)
+
+    def on_release_down(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pr.stop_y_motor()
+        else:
+            global y_pos
+            y_pos += int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def start_hold_left(self):
+        self.is_hold = True
+        pr.start_backward_x_motor()
+
+    def on_press_left(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_left)
+
+    def on_release_left(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pr.stop_x_motor()
+        else:
+            global x_pos
+            x_pos -= int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def start_hold_right(self):
+        self.is_hold = True
+        pr.start_forward_x_motor()
+
+    def on_press_right(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_right)
+
+    def on_release_right(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pr.stop_x_motor()
+        else:
+            global x_pos
+            x_pos += int(self.step_entry.get())
+            pr.go_to_pos(x_pos, y_pos)
+
+        self.get_position()
+
+    def on_hold_speed_change(self, *args):
+        try:
+            speed = int(self.hold_speed_var.get())
+            pr.set_velocity(speed)
+        except ValueError:
+            pass
+
+    # ------------- Scanning Functions -------------
 
     def run_scan(self, zoom=25):
 
@@ -360,7 +689,9 @@ class App:
             self.info_time_label.config(text=f"Time Elapsed: {elapsed_time}")
 
         self.display_map()
-        self.info_panel_border.update()
+        self.info_panel.update()
+
+    # ------------- Display Functions -------------
 
     def set_view(self, mode, filter_status):
         self.view_mode = mode
@@ -403,6 +734,38 @@ class App:
             image=self.map_tk
         )
 
+    def display_map(self):
+        if self.filter_on:
+            self.map_image = Image.fromarray(self.filter_map.astype(np.uint8))
+        else:
+            self.map_image = Image.fromarray(self.true_map.astype(np.uint8))
+
+        canvas_width = self.map_canvas.winfo_width()
+        canvas_height = self.map_canvas.winfo_height()
+
+        if canvas_width == 1 or canvas_height == 1:
+            self.map_canvas.bind("<Configure>", lambda e: self.display_map())
+            return
+
+        img_ratio = self.map_image.width / self.map_image.height
+        canvas_ratio = canvas_width / canvas_height
+
+        if img_ratio > canvas_ratio:
+            new_width = canvas_width
+            new_height = int(canvas_width / img_ratio)
+        else:
+            new_height = canvas_height
+            new_width = int(canvas_height * img_ratio)
+
+        img_resized = self.map_image.resize((new_width, new_height), Image.NEAREST)
+        self.tk_map_image = ImageTk.PhotoImage(img_resized)
+
+        self.map_canvas.delete("all")
+
+        x_center = canvas_width // 2
+        y_center = canvas_height // 2
+        self.map_canvas.create_image(x_center, y_center, image=self.tk_map_image, anchor="center")
+
     def display_live_image(self, img_rgb):
         img_pil = Image.fromarray(img_rgb)
 
@@ -422,6 +785,38 @@ class App:
         img_tk = ImageTk.PhotoImage(display_img)
         self.img_label.configure(image=img_tk)
         self.img_label.image = img_tk
+
+    # ------------- Setting and Saving Functions -------------
+
+    def adjust_exposure(self, exposure):
+        self.hcam.put_AutoExpoTarget(int(float(exposure)))
+        self.exposure_value_label.config(text=f"Exposure: {int(float(self.hcam.get_AutoExpoTarget()))}")
+
+    # ------------- Util Functions -------------
+
+    def update_panels(self):
+
+        y_position = -2
+
+        for panel in self.panels:
+
+            frame = panel["frame"]
+
+            # hide everything first
+            frame.place_forget()
+
+            if panel["var"].get():   # if checked
+
+                frame.place(
+                    relx=1.0,
+                    rely=0.0,
+                    anchor="ne",
+                    y=y_position
+                )
+
+                y_position += frame.winfo_height()
+
+        # ------------- Camera Handling -------------
 
     @staticmethod
     def cameraCallback(nEvent, ctx):
@@ -474,6 +869,22 @@ class App:
         self.root.update()
 
         self.hcam.StartPullModeWithCallback(self.cameraCallback, self)
+
+    def save_image(self):
+        if not hasattr(self, "current_frame") or self.current_frame is None:
+            print("No frame available to save.")
+            return
+
+        save_dir = "Saved Images"
+        os.makedirs(save_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"image_{timestamp}.png"
+        filepath = os.path.join(save_dir, filename)
+
+        cv2.imwrite(filepath, self.current_frame)
+
+        print(f"Image saved to {filepath}")
 
     def capture_frame(self):
         return self.current_frame.copy()
