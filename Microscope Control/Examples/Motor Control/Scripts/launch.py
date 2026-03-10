@@ -23,9 +23,9 @@ def on_close():
 
     root.destroy()
 
-    python_exe = Path(parent_dir) / ".venv" / "Scripts" / "python.exe"
+    python_exe = Path(sys.executable)
     script = Path(home_dir) / "main.py"
-    
+
     cmd = [
         str(python_exe),
         str(script),

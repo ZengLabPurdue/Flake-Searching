@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 from tkinter import Tk, StringVar
 from tkinter import ttk
@@ -23,7 +24,7 @@ def on_close():
 
     root.destroy()
 
-    python_exe = Path(homedir) / ".venv" / "Scripts" / "python.exe"
+    python_exe = Path(sys.executable)
     script = file_path
 
     cmd = [str(python_exe), str(script), str(pr_args_final)]
