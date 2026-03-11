@@ -12,6 +12,9 @@ class prior():
         self.z_velocity = 2600
         self.z_acceleration = 134442
 
+        dll_folder = os.path.dirname(self.path)
+        os.environ["PATH"] = dll_folder + os.pathsep + os.environ.get("PATH", "")
+
         if os.path.exists(self.path):
             global SDKPrior
             SDKPrior = WinDLL(self.path, winmode=0)

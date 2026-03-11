@@ -14,6 +14,9 @@ class prior():
 
         print("Initializing Prior Stage Control...")
 
+        dll_folder = os.path.dirname(self.path)
+        os.environ["PATH"] = dll_folder + os.pathsep + os.environ.get("PATH", "")
+
         if os.path.exists(self.path):
             global SDKPrior
             SDKPrior = WinDLL(self.path, winmode=0)

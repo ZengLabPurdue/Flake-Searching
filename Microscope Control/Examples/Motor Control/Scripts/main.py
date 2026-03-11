@@ -9,8 +9,6 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
 import random #debug
 from khoi_custom_prior_interface import prior as prior
-import instruments as ik
-import instruments.units as u
 import sys
 
 #Constant declaration
