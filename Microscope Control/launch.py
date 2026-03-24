@@ -17,24 +17,27 @@ file_path = filedialog.askopenfilename(
 )
 
 def on_close():
-    pr_args_final = pr_args.get() or "0"
+    prior_args_final = prior_args.get() or "0"
+    olympius_args_final = olympius_args.get() or "0"
 
     with open("port.config", "w") as f:
-        f.write(f"{pr_args_final}\n")
+        f.write(f"{prior_args_final}\n")
+        f.write(f"{olympius_args_final}\n")
 
     root.destroy()
 
     python_exe = Path(sys.executable)
     script = file_path
 
-    cmd = [str(python_exe), str(script), str(pr_args_final)]
+    cmd = [str(python_exe), str(script), str(prior_args_final)]
     subprocess.run(cmd, check=True)
 
 try:
     with open("port.config", "r") as f:
-        pr_args_value = f.readline().strip()
+        prior_args_value = f.readline().strip()
+        olympius_args_value = f.readline().strip()
 except FileNotFoundError:
-    pr_args_value = ""
+    prior_args_value = ""
 
 root = Tk()
 root.title("Launch")
@@ -46,13 +49,21 @@ frame.grid(row=0, column=0)
 prior_label = ttk.Label(frame, text="Prior COM Port:")
 prior_label.grid(row=0, column=0, padx=(0,10), pady=(0,10), sticky="e")
 
-pr_args = StringVar(value=pr_args_value)
-pr_entry = ttk.Entry(frame, textvariable=pr_args, width=10)
-pr_entry.grid(row=0, column=1, pady=(0,10), sticky="w")
-pr_entry.focus()
+prior_args = StringVar(value=prior_args_value)
+prior_entry = ttk.Entry(frame, textvariable=prior_args, width=10)
+prior_entry.grid(row=0, column=1, pady=(0,10), sticky="w")
+prior_entry.focus()
+
+olympius_label = ttk.Label(frame, text="Olympius COM Port:")
+olympius_label.grid(row=1, column=0, padx=(0,10), pady=(0,10), sticky="e")
+
+olympius_args = StringVar(value=olympius_args_value)
+olympius_entry = ttk.Entry(frame, textvariable=olympius_args, width=10)
+olympius_entry.grid(row=1, column=1, pady=(0,10), sticky="w")
+olympius_entry.focus()
 
 confirm_btn = ttk.Button(frame, text="Launch", command=on_close)
-confirm_btn.grid(row=1, column=0, columnspan=2, pady=(5,0))
+confirm_btn.grid(row=2, column=0, columnspan=2, pady=(5,0))
 
 root.bind("<Return>", lambda e: on_close())
 
