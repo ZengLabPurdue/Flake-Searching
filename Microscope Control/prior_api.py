@@ -3,16 +3,18 @@ import os
 import sys
 import time
 
-class prior():
+class Prior_Controller():
+
     def __init__(self, port_num, sdk_path):
         self.port_num = port_num
         self.path = sdk_path
+        
         self.velocity = 2600
         self.acceleration = 134442
         self.z_velocity = 2600
         self.z_acceleration = 134442
 
-        print("Initializing Prior Stage Control...")
+        print("Starting prior controller...")
 
         dll_folder = os.path.dirname(self.path)
         os.environ["PATH"] = dll_folder + os.pathsep + os.environ.get("PATH", "")
@@ -32,50 +34,36 @@ class prior():
                 sys.exit()
             else:
                 pass
-                #print(f"Ok initialising {ret}")
+
+            print("Connecting to prior controller...")
 
             ret = SDKPrior.PriorScientificSDK_Version(rx)
-            #print(f"dll version api ret={ret}, version={rx.value.decode()}")
 
             global sessionID
             sessionID = SDKPrior.PriorScientificSDK_OpenNewSession()
-            '''
-            if sessionID < 0:
-                print(f"Error getting sessionID {ret}")
-            else:
-                print(f"SessionID = {sessionID}")
-            '''
-            
+
             ret = SDKPrior.PriorScientificSDK_cmd(
                 sessionID, create_string_buffer(b"dll.apitest 33 goodresponse"), rx
             )
-            #print(f"api response {ret}, rx = {rx.value.decode()}")
 
             ret = SDKPrior.PriorScientificSDK_cmd(
                 sessionID, create_string_buffer(b"dll.apitest -300 stillgoodresponse"), rx
             )
-            #print(f"api response {ret}, rx = {rx.value.decode()}")
-
-            #print("controller.connect ", self.port_num)
             self.cmd(f"controller.connect {self.port_num}")
 
-            # initialization
-            ## get pos
+            print("Initializing prior controller...")
+
             self.wait_until_not_busy()
             position = self.cmd("controller.stage.position.get")
             curr_pos = position[1]
             curr_pos_list = curr_pos.split(",")
-            #print(curr_pos_list)
             self.x = int(curr_pos_list[0])
             self.y = int(curr_pos_list[1])
             z_pos = self.cmd("controller.z.position.get")
             self.z = int(z_pos[1])
 
-            ## get backlash values
             self.backlash_en, self.backlash_dist = self.get_backlash()
-            #self.z_backlash_en, self.z_backlash_dist = self.get_z_backlash()
 
-            ## set velocity and acceleration
             self.wait_until_not_busy()
             self.cmd(f"controller.stage.acc.set {self.acceleration}")
             self.cmd(f"controller.z.acc.set {self.z_acceleration}")
@@ -83,7 +71,7 @@ class prior():
             self.cmd(f"controller.stage.speed.set {self.velocity}")
             self.cmd(f"controller.z.speed.set {self.z_velocity}")
 
-            print("Initialized Prior Stage Control!")
+            print("Prior controller setup complete!")
 
         except Exception as e:
             
@@ -103,7 +91,6 @@ class prior():
         return ret, rx.value.decode()
     
     def wait_until_not_busy(self):
-        #print(self.cmd("controller.stage.busy.get")[1])
         start_time = time.time()
         while self.is_busy():
             pass

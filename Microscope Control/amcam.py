@@ -1262,7 +1262,7 @@ class Amcam:
             try:
                 dir = os.path.dirname(os.path.realpath(__file__))
                 if sys.platform == 'win32':
-                    print(cls.__lib)
+                    #print(cls.__lib)
                     cls.__lib = ctypes.windll.LoadLibrary(os.path.join(dir, 'amcam.dll'))
                 elif sys.platform.startswith('linux'):
                     cls.__lib = ctypes.cdll.LoadLibrary(os.path.join(dir, 'libamcam.so'))

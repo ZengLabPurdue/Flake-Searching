@@ -29,7 +29,7 @@ def on_close():
     python_exe = Path(sys.executable)
     script = file_path
 
-    cmd = [str(python_exe), str(script), str(prior_args_final)]
+    cmd = [str(python_exe), str(script), str(prior_args_final), str(olympius_args_final)]
     subprocess.run(cmd, check=True)
 
 try:

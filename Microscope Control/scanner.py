@@ -12,11 +12,13 @@ import tkinter.font as tkFont
 from PIL import Image, ImageTk
 
 import amcam
-from prior import prior
+from prior_api import Prior_Controller
+from turret_api import Turret_Controller
 import chip_edge_classifier
 
 DLL_PATH = os.getcwd() + r"\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
-COM_PORT = sys.argv[1]
+PRIOR_COM_PORT = sys.argv[1]
+TURRET_COM_PORT = sys.argv[2]
 DEFAULT_EXPOSURE = 60
 
 X_SIZE_2 = 7410 # 6 Frames
@@ -28,12 +30,13 @@ X_SIZE_4 = 2435
 MAGNIFICATION = 2
 
 try:
-    pr = prior(COM_PORT, DLL_PATH)
-    pr.get_curr_pos()
-    x_pos = pr.x
-    y_pos = pr.y
+    pc = Prior_Controller(PRIOR_COM_PORT, DLL_PATH)
+    tc = Turret_Controller(TURRET_COM_PORT)
+    pc.get_curr_pos()
+    x_pos = pc.x
+    y_pos = pc.y
 except Exception as e:
-    print("Failed to connect to Prior:", e)
+    print("Failed to connect to Prior Controller:", e)
     sys.exit(1)
 
 class App:
@@ -92,6 +95,12 @@ class App:
         self.panels.append({
             "name": "Adjust Exposure Panel",
             "frame": self.init_adjust_exposure_panel(),
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Objective Control Panel",
+            "frame": self.init_objective_control_panel(),
             "var": BooleanVar(value=False)
         })
 
@@ -455,27 +464,58 @@ class App:
 
         return self.adjust_exposure_panel
 
+    def init_objective_control_panel(self):
+        self.objective_control_panel = Frame(
+            self.main_frame,
+            bg="#f0f0f0",
+            width=204,
+            height=100
+        )
+        self.objective_control_panel.place(relx=1.0, rely=0.0, anchor="ne", y=442)
+
+        self.objective_control_background = Frame(
+            self.objective_control_panel,
+            bg="white",
+            width=200,
+            height=98
+        )
+        self.objective_control_background.place(x=2, y=0)
+
+        objective_control_title = Label(
+            self.objective_control_panel,
+            text="Objective Control",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 13)
+        )
+        objective_control_title.place(relx=0.5, y=5, anchor="n")
+
+        style = ttk.Style()
+        style.configure("Custom.Horizontal.TScale", background="white")
+
+        return self.objective_control_panel
+        
     # ------------- Stage Control Functions -------------
 
     def set_origin(self):
-        pr.set_origin()
+        pc.set_origin()
         self.get_position()
 
     def go_to_position(self):
-        pr.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
+        pc.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
         self.get_position()
 
     def get_position(self):
         global x_pos, y_pos
-        pr.get_curr_pos()
-        x_pos = pr.x
-        y_pos = pr.y
+        pc.get_curr_pos()
+        x_pos = pc.x
+        y_pos = pc.y
         self.x_coord_var.set(str(x_pos))
         self.y_coord_var.set(str(y_pos))
 
     def start_hold_up(self):
         self.is_hold = True
-        pr.start_forward_y_motor()
+        pc.start_forward_y_motor()
 
     def on_press_up(self, event):
         self.is_hold = False
@@ -487,17 +527,17 @@ class App:
             self.root.after_cancel(self.hold_job)
 
         if self.is_hold:
-            pr.stop_y_motor()   # stop continuous motion
+            pc.stop_y_motor()   # stop continuous motion
         else:
             global y_pos
             y_pos -= int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_down(self):
         self.is_hold = True
-        pr.start_backward_y_motor()
+        pc.start_backward_y_motor()
 
     def on_press_down(self, event):
         self.is_hold = False
@@ -509,17 +549,17 @@ class App:
             self.root.after_cancel(self.hold_job)
     
         if self.is_hold:
-            pr.stop_y_motor()
+            pc.stop_y_motor()
         else:
             global y_pos
             y_pos += int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_left(self):
         self.is_hold = True
-        pr.start_backward_x_motor()
+        pc.start_backward_x_motor()
 
     def on_press_left(self, event):
         self.is_hold = False
@@ -531,17 +571,17 @@ class App:
             self.root.after_cancel(self.hold_job)
     
         if self.is_hold:
-            pr.stop_x_motor()
+            pc.stop_x_motor()
         else:
             global x_pos
             x_pos -= int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_right(self):
         self.is_hold = True
-        pr.start_forward_x_motor()
+        pc.start_forward_x_motor()
 
     def on_press_right(self, event):
         self.is_hold = False
@@ -553,18 +593,18 @@ class App:
             self.root.after_cancel(self.hold_job)
     
         if self.is_hold:
-            pr.stop_x_motor()
+            pc.stop_x_motor()
         else:
             global x_pos
             x_pos += int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def on_hold_speed_change(self, *args):
         try:
             speed = int(self.hold_speed_var.get())
-            pr.set_velocity(speed)
+            pc.set_velocity(speed)
         except ValueError:
             pass
 
@@ -595,10 +635,10 @@ class App:
             target_x = center_x + offset_x * X_SIZE_2
             target_y = center_y - offset_y * Y_SIZE_2 
 
-            pr.go_to_pos(target_x, target_y)
+            pc.go_to_pos(target_x, target_y)
             x_pos, y_pos = target_x, target_y
 
-            print(f"Move Time: {pr.wait_until_not_busy()}")
+            print(f"Move Time: {pc.wait_until_not_busy()}")
 
             img = self.capture_frame()
             img = np.flipud(img)
@@ -636,7 +676,7 @@ class App:
             self.update_scan_status(progress=progress_percent, elapsed_time=elapsed_str)
 
         self.scan_running = False
-        pr.go_to_pos(center_x, center_y)
+        pc.go_to_pos(center_x, center_y)
         print("Scan finished!")
 
     def generate_rect_coords(self, x, y):
@@ -892,7 +932,7 @@ class App:
     def on_close(self):
         self.hcam = None
         self.buf = None
-        pr.disconnect()
+        pc.disconnect()
         self.root.destroy()
 
 if __name__ == "__main__":

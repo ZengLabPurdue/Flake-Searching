@@ -7,7 +7,7 @@ from tkinter import ttk
 import tkinter.font as tkFont
 from PIL import Image, ImageTk
 import amcam
-from prior import prior
+from prior_api import Prior_Controller
 from datetime import datetime
 from PIL import Image
 import chip_edge_classifier
@@ -22,18 +22,16 @@ Y_SIZE_2 = 7410 # 4 Frames
 Y_SIZE_4 = 3660 # 
 X_SIZE_4 = 2435 #
 try:
-    pr = prior(COM_PORT, DLL_PATH)
-    pr.get_curr_pos()
-    x_pos = pr.x
-    y_pos = pr.y
+    pc = Prior_Controller(COM_PORT, DLL_PATH)
+    pc.get_curr_pos()
+    x_pos = pc.x
+    y_pos = pc.y
     start_x = x_pos
     start_y = y_pos
     print("Connected to Prior stage")
 except Exception as e:
     print("Failed to connect to Prior:", e)
     sys.exit(1)
-
-print("")
 
 class App:
     def __init__(self, root):
@@ -57,7 +55,7 @@ class App:
         self.hold_job = None
         self.is_hold = False
 
-        self.init_manual_control_button_panel()
+        self.init_manual_control_panel()
         self.init_capture_image_panel()
         self.init_adjust_exposure_panel()
 
@@ -69,7 +67,7 @@ class App:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    def init_manual_control_button_panel(self):
+    def init_manual_control_panel(self):
 
         self.manual_control_border = Frame(
             self.main_frame,
@@ -324,24 +322,24 @@ class App:
         self.exposure_value_label.place(relx=0.5, y=70, anchor="n")
 
     def set_origin(self):
-        pr.set_origin()
+        pc.set_origin()
         self.get_position()
 
     def go_to_position(self):
-        pr.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
+        pc.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
         self.get_position()
 
     def get_position(self):
         global x_pos, y_pos
-        pr.get_curr_pos()
-        x_pos = pr.x
-        y_pos = pr.y
+        pc.get_curr_pos()
+        x_pos = pc.x
+        y_pos = pc.y
         self.x_coord_var.set(str(x_pos))
         self.y_coord_var.set(str(y_pos))
 
     def start_hold_up(self):
         self.is_hold = True
-        pr.start_forward_y_motor()
+        pc.start_forward_y_motor()
 
     def on_press_up(self, event):
         self.is_hold = False
@@ -353,17 +351,17 @@ class App:
             self.root.after_cancel(self.hold_job)
 
         if self.is_hold:
-            pr.stop_y_motor()   # stop continuous motion
+            pc.stop_y_motor()   # stop continuous motion
         else:
             global y_pos
             y_pos -= int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_down(self):
         self.is_hold = True
-        pr.start_backward_y_motor()
+        pc.start_backward_y_motor()
 
     def on_press_down(self, event):
         self.is_hold = False
@@ -375,17 +373,17 @@ class App:
             self.root.after_cancel(self.hold_job)
     
         if self.is_hold:
-            pr.stop_y_motor()
+            pc.stop_y_motor()
         else:
             global y_pos
             y_pos += int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_left(self):
         self.is_hold = True
-        pr.start_backward_x_motor()
+        pc.start_backward_x_motor()
 
     def on_press_left(self, event):
         self.is_hold = False
@@ -397,17 +395,17 @@ class App:
             self.root.after_cancel(self.hold_job)
     
         if self.is_hold:
-            pr.stop_x_motor()
+            pc.stop_x_motor()
         else:
             global x_pos
             x_pos -= int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_right(self):
         self.is_hold = True
-        pr.start_forward_x_motor()
+        pc.start_forward_x_motor()
 
     def on_press_right(self, event):
         self.is_hold = False
@@ -419,18 +417,18 @@ class App:
             self.root.after_cancel(self.hold_job)
     
         if self.is_hold:
-            pr.stop_x_motor()
+            pc.stop_x_motor()
         else:
             global x_pos
             x_pos += int(self.step_entry.get())
-            pr.go_to_pos(x_pos, y_pos)
+            pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def on_hold_speed_change(self, *args):
         try:
             speed = int(self.hold_speed_var.get())
-            pr.set_velocity(speed)
+            pc.set_velocity(speed)
         except ValueError:
             pass
 
@@ -520,7 +518,7 @@ class App:
     def on_close(self):
         self.hcam = None
         self.buf = None
-        pr.disconnect()
+        pc.disconnect()
         self.root.destroy()
 
 if __name__ == "__main__":
