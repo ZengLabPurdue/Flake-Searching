@@ -125,10 +125,9 @@ class Prior_Controller():
     def get_curr_pos(self):
         self.wait_until_not_busy()
         position = self.cmd("controller.stage.position.get")
-        curr_pos = position[1].split(",")
-        # print("curre_pos = ", curr_pos)
-        self.x = int(curr_pos[0])
-        self.y = int(curr_pos[1])
+        self.x = int(position[1].split(",")[0])
+        self.y = int(position[1].split(",")[1])
+        self.z = self.get_curr_z_pos()
 
     def set_z_velocity(self, velocity):
         self.wait_until_not_busy()
@@ -152,8 +151,7 @@ class Prior_Controller():
     def get_curr_z_pos(self):
         self.wait_until_not_busy()
         position = self.cmd("controller.z.position.get")
-        self.z = int(position[1])
-        return self.z
+        return int(position[1])
     
     def set_origin(self):
         self.cmd("controller.stage.position.set 0 0")

@@ -7,9 +7,14 @@ import cv2
 import numpy as np
 
 from tkinter import *
+import tkinter as tk
 from tkinter import ttk
 import tkinter.font as tkFont
 from PIL import Image, ImageTk
+
+from pathlib import Path
+home_dir = os.path.dirname(os.path.abspath(__file__))
+api_path = Path(home_dir) / "Turret API"
 
 import amcam
 from prior_api import Prior_Controller
@@ -35,6 +40,7 @@ try:
     pc.get_curr_pos()
     x_pos = pc.x
     y_pos = pc.y
+    z_pos = pc.z
 except Exception as e:
     print("Failed to connect to Prior Controller:", e)
     sys.exit(1)
@@ -101,6 +107,12 @@ class App:
         self.panels.append({
             "name": "Objective Control Panel",
             "frame": self.init_objective_control_panel(),
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Focus Panel",
+            "frame": self.init_focus_panel(),
             "var": BooleanVar(value=False)
         })
 
@@ -210,7 +222,7 @@ class App:
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=354
+            height=444
         )
         self.manual_control_panel.place(relx=1.0, rely=0.0, anchor="ne")
 
@@ -218,7 +230,7 @@ class App:
             self.manual_control_panel,
             bg="white",
             width=200,
-            height=352
+            height=442
         )
         self.manual_control_background.place(x=2, y=0)
 
@@ -328,16 +340,16 @@ class App:
         )
         self.move_to_button.place(relx=0.5, y=205, anchor="n")
 
-        self.manual_control_button_panel = Frame(
+        self.XY_manual_control_button_panel = Frame(
             self.manual_control_panel,
             bg="white",
             width=120, 
             height=90 
         )
-        self.manual_control_button_panel.place(relx=0.5, x=0, y=240, anchor="n")
-        self.manual_control_button_panel.pack_propagate(False)
+        self.XY_manual_control_button_panel.place(relx=0.5, x=0, y=240, anchor="n")
+        self.XY_manual_control_button_panel.pack_propagate(False)
 
-        controls = Frame(self.manual_control_button_panel, bg="white")
+        controls = Frame(self.XY_manual_control_button_panel, bg="white")
         controls.pack(expand=True, fill="both")
 
         style = ttk.Style()
@@ -345,15 +357,15 @@ class App:
         style.configure("Arrow.TButton", background="white")
         style.configure("Arrow.TButton", relief="flat")
 
-        self.btn_up = ttk.Button(controls, text="▴", style="Arrow.TButton")
-        self.btn_down = ttk.Button(controls, text="▾", style="Arrow.TButton")
+        self.btn_forward = ttk.Button(controls, text="▴", style="Arrow.TButton")
+        self.btn_backward = ttk.Button(controls, text="▾", style="Arrow.TButton")
         self.btn_left = ttk.Button(controls, text="◂", style="Arrow.TButton")
         self.btn_right = ttk.Button(controls, text="▸", style="Arrow.TButton")
 
-        self.btn_up.bind("<ButtonPress-1>", self.on_press_up)
-        self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
-        self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
-        self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+        self.btn_forward.bind("<ButtonPress-1>", self.on_press_forward)
+        self.btn_forward.bind("<ButtonRelease-1>", self.on_release_forward)
+        self.btn_backward.bind("<ButtonPress-1>", self.on_press_backward)
+        self.btn_backward.bind("<ButtonRelease-1>", self.on_release_backward)
         self.btn_left.bind("<ButtonPress-1>", self.on_press_left)
         self.btn_left.bind("<ButtonRelease-1>", self.on_release_left)
         self.btn_right.bind("<ButtonPress-1>", self.on_press_right)
@@ -364,10 +376,55 @@ class App:
         for c in [0, 1, 2]:
             controls.columnconfigure(c, weight=1)
 
-        self.btn_up.grid(row=0, column=1, sticky="nsew")
+        self.btn_forward.grid(row=0, column=1, sticky="nsew")
         self.btn_left.grid(row=1, column=0, sticky="nsew")
         self.btn_right.grid(row=1, column=2, sticky="nsew")
-        self.btn_down.grid(row=1, column=1, sticky="nsew")
+        self.btn_backward.grid(row=1, column=1, sticky="nsew")
+
+        z_label = Label(
+            self.manual_control_panel,
+            text="Z (µm):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        z_label.place(relx=0.0, rely=0.0, x=label_x, y=345)
+
+        self.z_coord_var = StringVar(value=str(z_pos))
+        self.z_coord_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.z_coord_var,
+            width=8
+        )
+        self.z_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=345)
+
+        self.Z_manual_control_button_panel = Frame(
+            self.manual_control_panel,
+            bg="white",
+            width=80, 
+            height=45 
+        )
+        self.Z_manual_control_button_panel.place(relx=0.5, x=0, y=380, anchor="n")
+        self.Z_manual_control_button_panel.pack_propagate(False)
+
+        z_controls = Frame(self.Z_manual_control_button_panel, bg="white")
+        z_controls.pack(expand=True, fill="both")
+
+        self.btn_up = ttk.Button(z_controls, text="▴", style="Arrow.TButton")
+        self.btn_down = ttk.Button(z_controls, text="▾", style="Arrow.TButton")
+
+        self.btn_up.bind("<ButtonPress-1>", self.on_press_up)
+        self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
+        self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
+        self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+
+        z_controls.rowconfigure(0, weight=1)
+        z_controls.columnconfigure(0, weight=1)
+        z_controls.columnconfigure(1, weight=1)
+
+        self.btn_up.grid(row=0, column=0, sticky="nsew")
+        self.btn_down.grid(row=0, column=1, sticky="nsew")
 
         return self.manual_control_panel
 
@@ -469,7 +526,7 @@ class App:
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=100
+            height=240
         )
         self.objective_control_panel.place(relx=1.0, rely=0.0, anchor="ne", y=442)
 
@@ -477,7 +534,7 @@ class App:
             self.objective_control_panel,
             bg="white",
             width=200,
-            height=98
+            height=238
         )
         self.objective_control_background.place(x=2, y=0)
 
@@ -490,12 +547,141 @@ class App:
         )
         objective_control_title.place(relx=0.5, y=5, anchor="n")
 
+        self.sharpness_var = tk.StringVar()
+        self.sharpness_var.set("Objective: Unknown")
+
+        self.sharpness_label = Label(
+            self.objective_control_panel,
+            textvariable=self.sharpness_var,
+            bg="white",
+            fg="black",
+            font="TkDefaultFont"
+        )
+
+        self.sharpness_label.place(relx=0.5, y=40, anchor="n")
+
         style = ttk.Style()
         style.configure("Custom.Horizontal.TScale", background="white")
 
-        return self.objective_control_panel
+        self.objective_control_button_panel = Frame(
+            self.objective_control_panel,
+            bg="white",
+            width=150,
+            height=150
+        )
+        self.objective_control_button_panel.place(x=26, y=70)
+        self.objective_control_button_panel.pack_propagate(False)
+
+        controls = Frame(self.objective_control_button_panel, bg="white")
+        controls.pack(expand=True, fill="both")
+
+        style = ttk.Style()
+        style.configure("Custom.TButton", font=("TkDefaultFont", 10), padding=5)
+        style.configure("Custom.TButton", background="white", relief="flat")
         
-    # ------------- Stage Control Functions -------------
+        self.btn1 = ttk.Button(controls, text="1", style="Custom.TButton")
+        self.btn2 = ttk.Button(controls, text="2", style="Custom.TButton")
+        self.btn3 = ttk.Button(controls, text="3", style="Custom.TButton")
+        self.btn4 = ttk.Button(controls, text="4", style="Custom.TButton")
+        self.btn5 = ttk.Button(controls, text="5", style="Custom.TButton")
+
+        self.objective_buttons = [self.btn1, self.btn2, self.btn3, self.btn4, self.btn5]
+
+        for r in range(3):
+            controls.rowconfigure(r, weight=1)
+        for c in range(2):
+            controls.columnconfigure(c, weight=1)
+
+        self.btn1.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        self.btn2.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        self.btn3.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        self.btn4.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
+        self.btn5.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=2, pady=2)
+
+        self.btn1.bind("<ButtonPress-1>", lambda e: self.change_objective(1))
+        self.btn2.bind("<ButtonPress-1>", lambda e: self.change_objective(2))
+        self.btn3.bind("<ButtonPress-1>", lambda e: self.change_objective(3))
+        self.btn4.bind("<ButtonPress-1>", lambda e: self.change_objective(4))
+        self.btn5.bind("<ButtonPress-1>", lambda e: self.change_objective(5))
+
+        self.change_objective(1)
+
+        return self.objective_control_panel
+
+    def init_focus_panel(self):
+        self.focus_panel = Frame(
+            self.main_frame,
+            bg="#f0f0f0",
+            width=204,
+            height=120
+        )
+        self.focus_panel.place(relx=1.0, rely=0.0, anchor="ne", y=442)
+
+        self.focus_background = Frame(
+            self.focus_panel,
+            bg="white",
+            width=200,
+            height=118
+        )
+        self.focus_background.place(x=2, y=0)
+
+        focus_title = Label(
+            self.focus_panel,
+            text="Focus Control",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 13)
+        )
+        focus_title.place(relx=0.5, y=5, anchor="n")
+
+        self.sharpness_var = tk.StringVar()
+        self.sharpness_var.set("Sharpness: Unknown")
+
+        self.sharpness_label = Label(
+            self.focus_panel,
+            textvariable=self.sharpness_var,
+            bg="white",
+            fg="black",
+            font="TkDefaultFont"
+        )
+
+        self.sharpness_label.place(relx=0.5, y=40, anchor="n")
+
+        self.auto_focus_btn = ttk.Button(self.focus_panel, text="Auto Focus", style="Normal.TButton", command=self.auto_focus)
+        self.auto_focus_btn.place(relx=0.5, y=75, anchor="n")
+
+        '''
+        self.focus_button_panel = Frame(
+            self.manual_control_panel,
+            bg="white",
+            width=80, 
+            height=45 
+        )
+        self.focus_button_panel.place(relx=0.5, x=0, y=380, anchor="n")
+        self.focus_button_panel.pack_propagate(False)
+
+        focus_controls = Frame(self.Z_manual_control_button_panel, bg="white")
+        focus_controls.pack(expand=True, fill="both")
+
+        self.btn_find_focus = ttk.Button(focus_controls, text="▴", style="Arrow.TButton")
+        self.btn_down = ttk.Button(focus_controls, text="▾", style="Arrow.TButton")
+
+        self.btn_up.bind("<ButtonPress-1>", self.on_press_up)
+        self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
+        self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
+        self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+
+        focus_controls.rowconfigure(0, weight=1)
+        focus_controls.columnconfigure(0, weight=1)
+        focus_controls.columnconfigure(1, weight=1)
+
+        self.btn_up.grid(row=0, column=0, sticky="nsew")
+        self.btn_down.grid(row=0, column=1, sticky="nsew")
+        '''
+
+        return self.focus_panel
+      
+    # ------------- Stage/Objective Control Functions -------------
 
     def set_origin(self):
         pc.set_origin()
@@ -510,18 +696,20 @@ class App:
         pc.get_curr_pos()
         x_pos = pc.x
         y_pos = pc.y
+        z_pos = pc.z
         self.x_coord_var.set(str(x_pos))
         self.y_coord_var.set(str(y_pos))
+        self.z_coord_var.set(str(z_pos))
 
-    def start_hold_up(self):
+    def start_hold_forward(self):
         self.is_hold = True
         pc.start_forward_y_motor()
 
-    def on_press_up(self, event):
+    def on_press_forward(self, event):
         self.is_hold = False
-        self.hold_job = self.root.after(200, self.start_hold_up)
+        self.hold_job = self.root.after(200, self.start_hold_forward)
 
-    def on_release_up(self, event):
+    def on_release_forward(self, event):
 
         if self.hold_job is not None:
             self.root.after_cancel(self.hold_job)
@@ -535,15 +723,15 @@ class App:
 
         self.get_position()
 
-    def start_hold_down(self):
+    def start_hold_backward(self):
         self.is_hold = True
         pc.start_backward_y_motor()
 
-    def on_press_down(self, event):
+    def on_press_backward(self, event):
         self.is_hold = False
-        self.hold_job = self.root.after(200, self.start_hold_down)
+        self.hold_job = self.root.after(200, self.start_hold_backward)
 
-    def on_release_down(self, event):
+    def on_release_backward(self, event):
     
         if self.hold_job is not None:
             self.root.after_cancel(self.hold_job)
@@ -601,12 +789,103 @@ class App:
 
         self.get_position()
 
+    def start_hold_up(self):
+        self.is_hold = True
+        pc.start_forward_z_motor()
+
+    def on_press_up(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_up)
+
+    def on_release_up(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pc.stop_z_motor()
+        else:
+            global z_pos
+            z_pos += int(self.step_entry.get())
+            pc.go_to_z_pos(z_pos)
+
+        self.get_position()
+
+    def start_hold_down(self):
+        self.is_hold = True
+        pc.start_backward_z_motor()
+
+    def on_press_down(self, event):
+        self.is_hold = False
+        self.hold_job = self.root.after(200, self.start_hold_down)
+
+    def on_release_down(self, event):
+    
+        if self.hold_job is not None:
+            self.root.after_cancel(self.hold_job)
+    
+        if self.is_hold:
+            pc.stop_z_motor()
+        else:
+            global z_pos
+            z_pos += int(self.step_entry.get())
+            pc.go_to_z_pos(z_pos)
+
+        self.get_position()
+
     def on_hold_speed_change(self, *args):
         try:
             speed = int(self.hold_speed_var.get())
             pc.set_velocity(speed)
         except ValueError:
             pass
+
+    def change_objective(self, position):
+        tc.turn_to_position(position)
+
+        self.sharpness_var.set(f"Objective: {position}")
+
+    def find_sharpness(self, image):
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        gray = cv2.GaussianBlur(gray, (3,3), 0)
+
+        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+        self.sharpness_var.set(f"Sharpness: {sharpness:.3f}")
+
+        return sharpness
+
+    def find_best_focus(self, z_start, z_end, steps):
+
+        best_focus = -1
+        best_z = z_start
+
+        z_positions = [
+            z_start + i*(z_end-z_start)/steps
+            for i in range(steps+1)
+        ]
+
+        for z in z_positions:
+
+            pc.go_to_z_pos(z)
+
+            image = self.capture_frame()
+
+            score = self.find_sharpness(image)
+
+            if score > best_focus:
+                best_focus = score
+                best_z = z
+
+        pc.go_to_z_pos(best_z)
+
+        return best_z
+
+    def auto_focus(self):
+        best_z = self.find_best_focus(pc.z-50, pc.z+50, 10)
+        best_z = self.find_best_focus(best_z-5, best_z+5, 10)
 
     # ------------- Scanning Functions -------------
 
@@ -880,6 +1159,8 @@ class App:
                 else:
                     self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     
+            self.find_sharpness(img)
+
         except amcam.HRESULTException as ex:
             print(f"Camera error: 0x{ex.hr:x}")
 

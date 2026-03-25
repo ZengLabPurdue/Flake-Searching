@@ -52,6 +52,8 @@ class Turret_Controller:
         else:
             print(f"Connection failed. Response: {current_response}")
 
+        self.is_moving = False
+
     def send_command(self, command, timeout=5):
 
         self.Usart.reset_input_buffer()
@@ -103,28 +105,44 @@ class Turret_Controller:
             return False
         '''
     
-    def turn_to_position(self, value):
+    def turn_to_position(self, value, output=False):
 
         if not 1 <= value <= NUM_OBJECTIVES:
-            raise ValueError("Turret position must be 1–6")
+            raise ValueError("Turret position must be 1–5")
 
-        print(f"Moving turret to position {value}")
+        if self.is_moving:
+            if output: print("Turret is already moving. Command ignored.")
+            return
 
-        response = self.send_command(f"1OB {value}")
+        self.is_moving = True
 
-        print("Move complete:", response)
+        try:
+            if output: print(f"Moving turret to position {value}")
+
+            self.send_command(f"1OB {value}")
+
+            while True:
+                pos = self.check_position()
+                if pos == value:
+                    break
+                t.sleep(0.1)
+
+            if output: print("Move complete")
+
+        finally:
+            self.is_moving = False
     
-    def check_position(self):
+    def check_position(self, output=False):
 
         response = self.send_command("1OB?")
 
         try:
             parts = response.split()
             position = int(parts[1])
-            print("Current position:", position)
+            if output: print("Current position:", position)
             return position
         except:
-            print("Unexpected response:", response)
+            if output: print("Unexpected response:", response)
             return None
     
     def close(self):
