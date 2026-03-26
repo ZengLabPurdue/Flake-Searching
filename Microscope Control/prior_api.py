@@ -11,8 +11,8 @@ class Prior_Controller():
         
         self.velocity = 2600
         self.acceleration = 134442
-        self.z_velocity = 2600
-        self.z_acceleration = 134442
+        self.z_velocity = 250
+        self.z_acceleration = 57100
 
         print("Starting prior controller...")
 
@@ -53,16 +53,11 @@ class Prior_Controller():
 
             print("Initializing prior controller...")
 
-            self.wait_until_not_busy()
-            position = self.cmd("controller.stage.position.get")
-            curr_pos = position[1]
-            curr_pos_list = curr_pos.split(",")
-            self.x = int(curr_pos_list[0])
-            self.y = int(curr_pos_list[1])
-            z_pos = self.cmd("controller.z.position.get")
-            self.z = int(z_pos[1])
-
+            self.get_curr_pos()
             self.backlash_en, self.backlash_dist = self.get_backlash()
+
+            self.cmd(f"controller.z.acc.get")
+            self.cmd(f"controller.z.speed.get")
 
             self.wait_until_not_busy()
             self.cmd(f"controller.stage.acc.set {self.acceleration}")
@@ -74,20 +69,17 @@ class Prior_Controller():
             print("Prior controller setup complete!")
 
         except Exception as e:
-            
             print(e)
 
     def cmd(self, msg):
-        #print(msg)
+        print(msg)
         ret = SDKPrior.PriorScientificSDK_cmd(
             sessionID, create_string_buffer(msg.encode()), rx
         )
-        '''
         if ret:
             print(f"Api error {ret}")
         else:
             print(f"OK {rx.value.decode()}")
-        '''
         return ret, rx.value.decode()
     
     def wait_until_not_busy(self):
@@ -151,7 +143,7 @@ class Prior_Controller():
     def get_curr_z_pos(self):
         self.wait_until_not_busy()
         position = self.cmd("controller.z.position.get")
-        return int(position[1])
+        return int(position[1]) / 10
     
     def set_origin(self):
         self.cmd("controller.stage.position.set 0 0")
