@@ -828,7 +828,7 @@ class App:
             pc.stop_z_motor()
         else:
             global z_pos
-            z_pos += int(self.step_entry.get())
+            z_pos -= int(self.step_entry.get())
             pc.go_to_z_pos(z_pos)
 
         self.get_position()
@@ -867,13 +867,21 @@ class App:
             for i in range(steps+1)
         ]
 
+        if (abs(pc.z - z_positions[0]) > abs(pc.z - z_positions[-1])):
+            z_positions.reverse()
+
         for z in z_positions:
 
             pc.go_to_z_pos(z)
+            self.get_position()
 
+            self.wait_until_new_frame()
+            time.sleep(0.2)
             image = self.capture_frame()
 
             score = self.find_sharpness(image)
+
+            print(f"Z: {z}, Sharpness: {score}")
 
             if score > best_focus:
                 best_focus = score
@@ -883,9 +891,23 @@ class App:
 
         return best_z
 
-    def auto_focus(self):
-        best_z = self.find_best_focus(pc.z-50, pc.z+50, 10)
-        best_z = self.find_best_focus(best_z-5, best_z+5, 10)
+    def auto_focus(self, start_range = 3000):
+        _range = start_range
+        best_z = pc.z
+        while _range > 100:
+            best_z = self.find_best_focus(best_z-_range, best_z+_range, 10)
+            _range = int(_range / 2)
+            self.wait_until_new_frame()
+            time.sleep(0.2)
+            image = self.capture_frame()
+            sharpness = self.find_sharpness(image)
+            print(f"Best Z: {best_z}, Sharpness: {sharpness}, Range: {_range}")
+            print("-----------------------------------")
+
+    def stop_all_motors(self):
+        pc.stop_x_motor()
+        pc.stop_y_motor()
+        pc.stop_z_motor()
 
     # ------------- Scanning Functions -------------
 
@@ -1145,7 +1167,8 @@ class App:
     def on_image(self):
         try:
             self.hcam.PullImageV2(self.buf, 24, None)
-    
+            self.frame_id += 1
+
             row_bytes = ((self.width * 24 + 31) // 32 * 4)
             img = np.frombuffer(self.buf, dtype=np.uint8).reshape(self.height, row_bytes)
             img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
@@ -1162,7 +1185,7 @@ class App:
             self.find_sharpness(img)
 
         except amcam.HRESULTException as ex:
-            print(f"Camera error: 0x{ex.hr:x}")
+            print("Camera error:", ex)
 
     def run_camera(self):
         cams = amcam.Amcam.EnumV2()
@@ -1177,6 +1200,8 @@ class App:
         self.width, self.height = self.hcam.get_Size()
         bufsize = ((self.width * 24 + 31) // 32 * 4) * self.height
         self.buf = bytes(bufsize)
+
+        self.frame_id = 0
 
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -1206,6 +1231,17 @@ class App:
         cv2.imwrite(filepath, self.current_frame)
 
         print(f"Image saved to {filepath}")
+
+    def wait_until_new_frame(self):
+        old_frame = self.frame_id
+        start = time.time()
+        while self.frame_id == old_frame:
+            self.root.update()
+            time.sleep(0.005)
+
+            if time.time() - start > 1:
+                print("Frame timeout")
+                break
 
     def capture_frame(self):
         return self.current_frame.copy()
