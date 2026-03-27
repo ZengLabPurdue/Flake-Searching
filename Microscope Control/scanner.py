@@ -26,11 +26,14 @@ PRIOR_COM_PORT = sys.argv[1]
 TURRET_COM_PORT = sys.argv[2]
 DEFAULT_EXPOSURE = 60
 
-X_SIZE_2 = 7410 # 6 Frames
-Y_SIZE_2 = 4635 # 6 Frames
+CENTER_CROP_WIDTH = 3000
+CENTER_CROP_HEIGHT = 3000
 
-Y_SIZE_4 = 3660 
-X_SIZE_4 = 2435
+X_SIZE_2 = 10568
+Y_SIZE_2 = 7506
+
+Y_SIZE_10 = 3660 
+X_SIZE_10 = 2435
 
 MAGNIFICATION = 2
 
@@ -155,7 +158,12 @@ class App:
             )
 
         menu_bar.add_cascade(label="Panels", menu=panel_menu)
-        menu_bar.add_command(label="Run Scan", command=self.run_scan)
+
+        scan_menu = Menu(menu_bar, tearoff=0)
+        scan_menu.add_command(label="Run Full Scan", command=lambda: None)
+        scan_menu.add_command(label="Run Chip Mapping Scan", command=self.run_chip_mapping_scan)
+        scan_menu.add_command(label="Run Flake Finding Scan", command=lambda: None)
+        menu_bar.add_cascade(label="Scan", menu=scan_menu)
 
         root.config(menu=menu_bar)
 
@@ -747,7 +755,7 @@ class App:
 
     def start_hold_left(self):
         self.is_hold = True
-        pc.start_backward_x_motor()
+        pc.start_forward_x_motor()
 
     def on_press_left(self, event):
         self.is_hold = False
@@ -762,14 +770,14 @@ class App:
             pc.stop_x_motor()
         else:
             global x_pos
-            x_pos -= int(self.step_entry.get())
+            x_pos += int(self.step_entry.get())
             pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_right(self):
         self.is_hold = True
-        pc.start_forward_x_motor()
+        pc.start_backward_x_motor()
 
     def on_press_right(self, event):
         self.is_hold = False
@@ -784,14 +792,14 @@ class App:
             pc.stop_x_motor()
         else:
             global x_pos
-            x_pos += int(self.step_entry.get())
+            x_pos -= int(self.step_entry.get())
             pc.go_to_pos(x_pos, y_pos)
 
         self.get_position()
 
     def start_hold_up(self):
         self.is_hold = True
-        pc.start_forward_z_motor()
+        pc.start_backward_z_motor()
 
     def on_press_up(self, event):
         self.is_hold = False
@@ -806,14 +814,14 @@ class App:
             pc.stop_z_motor()
         else:
             global z_pos
-            z_pos += int(self.step_entry.get())
+            z_pos -= int(self.step_entry.get())
             pc.go_to_z_pos(z_pos)
 
         self.get_position()
 
     def start_hold_down(self):
         self.is_hold = True
-        pc.start_backward_z_motor()
+        pc.start_forward_z_motor()
 
     def on_press_down(self, event):
         self.is_hold = False
@@ -828,7 +836,7 @@ class App:
             pc.stop_z_motor()
         else:
             global z_pos
-            z_pos -= int(self.step_entry.get())
+            z_pos += int(self.step_entry.get())
             pc.go_to_z_pos(z_pos)
 
         self.get_position()
@@ -867,7 +875,7 @@ class App:
             for i in range(steps+1)
         ]
 
-        if (abs(pc.z - z_positions[0]) > abs(pc.z - z_positions[-1])):
+        if (abs(pc.z - z_positions[0]) < abs(pc.z - z_positions[-1])):
             z_positions.reverse()
 
         for z in z_positions:
@@ -875,13 +883,10 @@ class App:
             pc.go_to_z_pos(z)
             self.get_position()
 
-            self.wait_until_new_frame()
-            time.sleep(0.2)
-            image = self.capture_frame()
-
+            image = self.capture_frame(num_images=1)
             score = self.find_sharpness(image)
 
-            print(f"Z: {z}, Sharpness: {score}")
+            #print(f"Z: {z}, Sharpness: {score}")
 
             if score > best_focus:
                 best_focus = score
@@ -891,18 +896,16 @@ class App:
 
         return best_z
 
-    def auto_focus(self, start_range = 3000):
+    def auto_focus(self, start_range = 1000):
         _range = start_range
         best_z = pc.z
         while _range > 100:
             best_z = self.find_best_focus(best_z-_range, best_z+_range, 10)
             _range = int(_range / 2)
-            self.wait_until_new_frame()
-            time.sleep(0.2)
             image = self.capture_frame()
             sharpness = self.find_sharpness(image)
-            print(f"Best Z: {best_z}, Sharpness: {sharpness}, Range: {_range}")
-            print("-----------------------------------")
+            #print(f"Best Z: {best_z}, Sharpness: {sharpness}, Range: {_range}")
+            #print("-----------------------------------")
 
     def stop_all_motors(self):
         pc.stop_x_motor()
@@ -911,9 +914,9 @@ class App:
 
     # ------------- Scanning Functions -------------
 
-    def run_scan(self, zoom=25):
+    def run_chip_mapping_scan(self, zoom=25):
 
-        print("Scan running...")
+        print("Chip mapping scan running...")
 
         start_time = time.time()
         self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
@@ -929,7 +932,7 @@ class App:
         center_y = y_pos
 
         #coords, total_frames = self.generate_spiral_coords(max(num_steps_x, num_steps_y))
-        coords, total_frames = self.generate_rect_coords(19, 9)
+        coords, total_frames = self.generate_rect_coords(7, 3)
 
         i = 0
         for offset_x, offset_y in coords:
@@ -942,8 +945,6 @@ class App:
             print(f"Move Time: {pc.wait_until_not_busy()}")
 
             img = self.capture_frame()
-            img = np.flipud(img)
-            img = np.fliplr(img)
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
             binary = chip_edge_classifier.chip_filter(img, display=False)
@@ -981,12 +982,18 @@ class App:
         print("Scan finished!")
 
     def generate_rect_coords(self, x, y):
-        
+
         rect_coords = []
         total_frames = x * y
 
         for i in range(x):
-            for j in range(y):
+
+            if i % 2 == 0:
+                y_range = range(y)
+            else:
+                y_range = range(y - 1, -1, -1)
+
+            for j in y_range:
                 rect_coords.append((i - x // 2, j - y // 2))
 
         return rect_coords, total_frames
@@ -1108,13 +1115,29 @@ class App:
         self.map_canvas.create_image(x_center, y_center, image=self.tk_map_image, anchor="center")
 
     def display_live_image(self, img_rgb):
+
+        h, w = img_rgb.shape[:2]
+
+        cx = w // 2
+        cy = h // 2
+
+        x1 = cx - CENTER_CROP_WIDTH // 2
+        y1 = cy - CENTER_CROP_HEIGHT // 2
+        x2 = cx + CENTER_CROP_WIDTH // 2
+        y2 = cy + CENTER_CROP_HEIGHT // 2
+
+        img_rgb = img_rgb.copy()
+        cv2.rectangle(img_rgb, (x1, y1), (x2, y2), (0, 255, 0), 5)
+
         img_pil = Image.fromarray(img_rgb)
 
         lbl_w = self.img_label.winfo_width() or self.width
         lbl_h = self.img_label.winfo_height() or self.height
 
+
         if lbl_w < 10 or lbl_h < 10:
             return
+
         img_pil_copy = img_pil.copy()
         img_pil_copy.thumbnail((lbl_w, lbl_h), Image.Resampling.LANCZOS)
 
@@ -1136,24 +1159,21 @@ class App:
     # ------------- Util Functions -------------
 
     def update_panels(self):
-
         y_position = -2
 
         for panel in self.panels:
-
             frame = panel["frame"]
-
-            # hide everything first
             frame.place_forget()
 
-            if panel["var"].get():   # if checked
-
+            if panel["var"].get():
                 frame.place(
                     relx=1.0,
                     rely=0.0,
                     anchor="ne",
                     y=y_position
                 )
+
+                frame.update_idletasks()
 
                 y_position += frame.winfo_height()
 
@@ -1172,6 +1192,7 @@ class App:
             row_bytes = ((self.width * 24 + 31) // 32 * 4)
             img = np.frombuffer(self.buf, dtype=np.uint8).reshape(self.height, row_bytes)
             img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
+            img = cv2.flip(img, -1)
             self.current_frame = img.copy()
     
             if self.view_mode == "Map": return
@@ -1238,13 +1259,21 @@ class App:
         while self.frame_id == old_frame:
             self.root.update()
             time.sleep(0.005)
-
             if time.time() - start > 1:
                 print("Frame timeout")
                 break
 
-    def capture_frame(self):
-        return self.current_frame.copy()
+    def capture_frame(self, num_images=2):
+        self.wait_until_new_frame()
+
+        sum_frame = np.zeros_like(self.current_frame, dtype=np.float32)
+
+        for _ in range(num_images):
+            self.wait_until_new_frame()
+            sum_frame += self.current_frame.astype(np.float32)
+
+        avg_frame = (sum_frame / num_images).astype(self.current_frame.dtype)
+        return avg_frame
 
     def on_close(self):
         self.hcam = None
