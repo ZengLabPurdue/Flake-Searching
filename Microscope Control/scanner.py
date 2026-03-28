@@ -26,11 +26,11 @@ PRIOR_COM_PORT = sys.argv[1]
 TURRET_COM_PORT = sys.argv[2]
 DEFAULT_EXPOSURE = 60
 
-CENTER_CROP_WIDTH = 3000
-CENTER_CROP_HEIGHT = 3000
+CENTER_CROP_WIDTH_RATIO = 0.9
+CENTER_CROP_HEIGHT_RATIO = 0.9
 
-X_SIZE_2 = 10568
-Y_SIZE_2 = 7506
+X_SIZE_2 = 10642
+Y_SIZE_2 = 7027
 
 Y_SIZE_10 = 3660 
 X_SIZE_10 = 2435
@@ -896,7 +896,7 @@ class App:
 
         return best_z
 
-    def auto_focus(self, start_range = 1000):
+    def auto_focus(self, start_range = 3000):
         _range = start_range
         best_z = pc.z
         while _range > 100:
@@ -914,7 +914,7 @@ class App:
 
     # ------------- Scanning Functions -------------
 
-    def run_chip_mapping_scan(self, zoom=25):
+    def run_chip_mapping_scan(self, zoom=10):
 
         print("Chip mapping scan running...")
 
@@ -925,9 +925,6 @@ class App:
 
         global x_pos, y_pos
 
-        num_steps_x = 6
-        num_steps_y = 6
-
         center_x = x_pos
         center_y = y_pos
 
@@ -936,13 +933,13 @@ class App:
 
         i = 0
         for offset_x, offset_y in coords:
-            target_x = center_x + offset_x * X_SIZE_2
-            target_y = center_y - offset_y * Y_SIZE_2 
+            target_x = center_x + offset_x * X_SIZE_2 * CENTER_CROP_WIDTH_RATIO
+            target_y = center_y - offset_y * Y_SIZE_2 * CENTER_CROP_HEIGHT_RATIO
 
             pc.go_to_pos(target_x, target_y)
             x_pos, y_pos = target_x, target_y
 
-            print(f"Move Time: {pc.wait_until_not_busy()}")
+            pc.wait_until_not_busy()
 
             img = self.capture_frame()
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -955,7 +952,7 @@ class App:
             elif self.view_mode == "Filter":
                 self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
 
-            map_x = int(self.filter_map.shape[1] / 2 + (offset_x - 0.5) * img_binary_rgb.shape[1] / zoom)
+            map_x = int(self.filter_map.shape[1] / 2 - (offset_x + 0.5) * img_binary_rgb.shape[1] / zoom)
             map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_binary_rgb.shape[0] / zoom)
 
             h, w = img_binary_rgb.shape[:2]
@@ -1115,16 +1112,18 @@ class App:
         self.map_canvas.create_image(x_center, y_center, image=self.tk_map_image, anchor="center")
 
     def display_live_image(self, img_rgb):
-
         h, w = img_rgb.shape[:2]
 
         cx = w // 2
         cy = h // 2
 
-        x1 = cx - CENTER_CROP_WIDTH // 2
-        y1 = cy - CENTER_CROP_HEIGHT // 2
-        x2 = cx + CENTER_CROP_WIDTH // 2
-        y2 = cy + CENTER_CROP_HEIGHT // 2
+        crop_w = int(w * CENTER_CROP_WIDTH_RATIO)
+        crop_h = int(h * CENTER_CROP_HEIGHT_RATIO)
+
+        x1 = cx - crop_w // 2
+        y1 = cy - crop_h // 2
+        x2 = cx + crop_w // 2
+        y2 = cy + crop_h // 2
 
         img_rgb = img_rgb.copy()
         cv2.rectangle(img_rgb, (x1, y1), (x2, y2), (0, 255, 0), 5)
@@ -1133,7 +1132,6 @@ class App:
 
         lbl_w = self.img_label.winfo_width() or self.width
         lbl_h = self.img_label.winfo_height() or self.height
-
 
         if lbl_w < 10 or lbl_h < 10:
             return
@@ -1185,6 +1183,8 @@ class App:
             ctx.on_image()
 
     def on_image(self):
+        #print(f"New Frame Time: {time.time()-self.start_camera_frame_timer}")
+        #self.start_camera_frame_timer = time.time()
         try:
             self.hcam.PullImageV2(self.buf, 24, None)
             self.frame_id += 1
@@ -1215,6 +1215,9 @@ class App:
             return
 
         self.hcam = amcam.Amcam.Open(cams[0].id)
+
+        self.hcam.put_eSize(2)
+
         self.hcam.put_AutoExpoEnable(True)
         self.hcam.put_AutoExpoTarget(DEFAULT_EXPOSURE)
 
@@ -1236,6 +1239,18 @@ class App:
         self.root.update()
 
         self.hcam.StartPullModeWithCallback(self.cameraCallback, self)
+
+        self.start_camera_frame_timer = 0
+
+        num_res = self.hcam.ResolutionNumber()
+        for i in range(num_res):
+            print(f"Resolution {i}: {self.hcam.get_Resolution(i)}")
+
+        width, height = self.hcam.get_Size()
+        print(f"Current Resolution: ({width}, {height})")
+
+        max_speed = self.hcam.MaxSpeed()
+        self.hcam.put_Speed(max_speed)
 
     def save_image(self):
         if not hasattr(self, "current_frame") or self.current_frame is None:
@@ -1273,8 +1288,21 @@ class App:
             sum_frame += self.current_frame.astype(np.float32)
 
         avg_frame = (sum_frame / num_images).astype(self.current_frame.dtype)
-        return avg_frame
 
+        h, w = avg_frame.shape[:2]
+        crop_w = int(w * CENTER_CROP_WIDTH_RATIO)
+        crop_h = int(h * CENTER_CROP_HEIGHT_RATIO)
+        cx, cy = w // 2, h // 2
+
+        x1 = cx - crop_w // 2
+        y1 = cy - crop_h // 2
+        x2 = cx + crop_w // 2
+        y2 = cy + crop_h // 2
+
+        cropped_frame = avg_frame[y1:y2, x1:x2]
+
+        return cropped_frame
+    
     def on_close(self):
         self.hcam = None
         self.buf = None
