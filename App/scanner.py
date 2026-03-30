@@ -31,14 +31,17 @@ PRIOR_COM_PORT = sys.argv[1]
 TURRET_COM_PORT = sys.argv[2]
 DEFAULT_EXPOSURE = 60
 
-CENTER_CROP_WIDTH_RATIO = 0.9
-CENTER_CROP_HEIGHT_RATIO = 0.9
+CENTER_CROP_WIDTH_RATIO_2X = 0.7
+CENTER_CROP_HEIGHT_RATIO_2X = 0.7
+
+CENTER_CROP_WIDTH_RATIO_10X = 0.9
+CENTER_CROP_HEIGHT_RATIO_10X = 0.9
 
 X_SIZE_2 = 10642
 Y_SIZE_2 = 7027
 
-Y_SIZE_10 = 2142 
-X_SIZE_10 = 1359
+X_SIZE_10 = 2142 
+Y_SIZE_10 = 1359
 
 MAGNIFICATION = 2
 
@@ -86,6 +89,8 @@ class App:
         self.width = 0
         self.height = 0
         
+        self.magnification = "2x"
+
         self.panels = []
 
         self.panels.append({
@@ -165,9 +170,9 @@ class App:
         menu_bar.add_cascade(label="Panels", menu=panel_menu)
 
         scan_menu = Menu(menu_bar, tearoff=0)
-        scan_menu.add_command(label="Run Full Scan", command=lambda: None)
-        scan_menu.add_command(label="Run Chip Mapping Scan", command=self.run_chip_mapping_scan)
-        scan_menu.add_command(label="Run Flake Finding Scan", command=lambda: None)
+        scan_menu.add_command(label="Run Full Scan", command=self.run_full_scan)
+        scan_menu.add_command(label="Run 2x Scan", command=self.run_2x_scan)
+        scan_menu.add_command(label="Run 10x Scan", command=lambda: None)
         menu_bar.add_cascade(label="Scan", menu=scan_menu)
 
         root.config(menu=menu_bar)
@@ -856,6 +861,17 @@ class App:
     def change_objective(self, position):
         tc.turn_to_position(position)
 
+        if position == 1:
+            self.magnification = "2x"
+        elif position == 2:
+            self.magnification = "10x"
+        elif position == 3:
+            self.magnification = None
+        elif position == 4:
+            self.magnification = None
+        elif position == 5:
+            self.magnification = None
+
         self.sharpness_var.set(f"Objective: {position}")
 
     def find_sharpness(self, image):
@@ -919,9 +935,17 @@ class App:
 
     # ------------- Scanning Functions -------------
 
-    def run_chip_mapping_scan(self, zoom=10):
+    def run_full_scan(self):
 
-        print("Chip mapping scan running...")
+        print("Run")
+
+        center_x, center_y, zoom_2x = self.run_2x_scan()
+        chips = self.find_chips(self.filter_map)
+        scan_coordinates = self.generate_10x_scan_coordinates(chips, center_x, center_y, zoom_2x)
+
+    def run_2x_scan(self, zoom=6):
+
+        print("2x scan running...")
 
         self.set_view("Map", True)
 
@@ -936,12 +960,12 @@ class App:
         center_y = y_pos
 
         #coords, total_frames = self.generate_spiral_coords(max(num_steps_x, num_steps_y))
-        coords, total_frames = self.generate_rect_coords(7, 3)
+        coords, total_frames = self.generate_rect_coords(3, 3)
 
         i = 0
         for offset_x, offset_y in coords:
-            target_x = center_x + offset_x * X_SIZE_2 * CENTER_CROP_WIDTH_RATIO
-            target_y = center_y - offset_y * Y_SIZE_2 * CENTER_CROP_HEIGHT_RATIO
+            target_x = center_x + offset_x * X_SIZE_2 * CENTER_CROP_WIDTH_RATIO_2X
+            target_y = center_y - offset_y * Y_SIZE_2 * CENTER_CROP_HEIGHT_RATIO_2X
 
             pc.go_to_pos(target_x, target_y)
             x_pos, y_pos = target_x, target_y
@@ -985,52 +1009,121 @@ class App:
         pc.go_to_pos(center_x, center_y)
         print("Scan finished!")
 
+        return center_x, center_y, zoom
+
+    def run_10x_scan(self, zoom=6):
+
+        print("10x scan running...")
+
+        self.set_view("Map", True)
+
+        start_time = time.time()
+        self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
+        self.filter_map = np.zeros((3000, 3000), dtype=np.uint8)
+        self.scan_running = True
+
+        global x_pos, y_pos
+
+        center_x = x_pos
+        center_y = y_pos
+
+        coords, total_frames = self.generate_rect_coords(3, 3)
+
+        i = 0
+        for offset_x, offset_y in coords:
+            target_x = center_x + offset_x * X_SIZE_2 * CENTER_CROP_WIDTH_RATIO_10X
+            target_y = center_y - offset_y * Y_SIZE_2 * CENTER_CROP_HEIGHT_RATIO_10X
+
+            pc.go_to_pos(target_x, target_y)
+            x_pos, y_pos = target_x, target_y
+
+            pc.wait_until_not_busy()
+
+            img = self.capture_frame()
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            binary = chip_edge_classifier.chip_filter(img, display=False)
+            img_binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+
+            if self.view_mode == "Camera View":
+                self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            elif self.view_mode == "Filter":
+                self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
+
+            map_x = int(self.filter_map.shape[1] / 2 - (offset_x + 0.5) * img_binary_rgb.shape[1] / zoom)
+            map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_binary_rgb.shape[0] / zoom)
+
+            h, w = img_binary_rgb.shape[:2]
+            img_small = img_rgb[::zoom, ::zoom]
+            img_binary_small = img_binary_rgb[::zoom, ::zoom, 0]
+
+            x_start = max(0, map_x)
+            y_start = max(0, map_y)
+            x_end = min(self.filter_map.shape[1], x_start + img_binary_small.shape[1])
+            y_end = min(self.filter_map.shape[0], y_start + img_binary_small.shape[0])
+
+            self.true_map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
+            self.filter_map[y_start:y_end, x_start:x_end] = img_binary_small[:y_end - y_start, :x_end - x_start]
+
+            elapsed = time.time() - start_time
+            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+            progress_percent = f"{(i+1)}/{total_frames} ({(i+1)*100//total_frames}%)"
+            i = i + 1
+    
+            self.update_scan_status(progress=progress_percent, elapsed_time=elapsed_str)
+
+        self.scan_running = False
+        pc.go_to_pos(center_x, center_y)
+        print("Scan finished!")
+
+    def find_chips(self, binary_map):
         binary_map = (self.filter_map > 0).astype("uint8") * 255
         contours, _ = cv2.findContours(binary_map, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         filtered_contours = [c for c in contours if cv2.contourArea(c) >= 1000]
 
-        print("Number of shapes (area >= 10):", len(filtered_contours))
+        chips = []
 
         for i, contour in enumerate(filtered_contours):
-            area = cv2.contourArea(contour)
-            # Get minimum area rectangle
-            rect = cv2.boundingRect(contour)
-            box = cv2.boxPoints(rect)
-            box = np.int0(box)
+            x, y, w, h = cv2.boundingRect(contour)
+            chips.append((x,y,w,h))
+            cv2.rectangle(self.true_map, (x, y), (x+w, y+h), (255,255,0), 5)
 
-            print(f"Shape {i+1}: area={area}, rectangle corners={box}")
+        return chips
+    
+    def generate_10x_scan_coordinates(self, chips, scan_center_x, scan_center_y, zoom):
 
-        '''
-        target_w = 200  # width of small scanning window
-        target_h = 200  # height of small scanning window
+        window_w = int(self.hcam.get_Size()[0] * CENTER_CROP_WIDTH_RATIO_2X / zoom / 5 * CENTER_CROP_WIDTH_RATIO_10X)
+        window_h = int(self.hcam.get_Size()[1] * CENTER_CROP_HEIGHT_RATIO_2X / zoom / 5 * CENTER_CROP_HEIGHT_RATIO_10X)
 
-        # compute how many windows are needed to cover the shape
-        num_windows_x = math.ceil(w / target_w)
-        num_windows_y = math.ceil(h / target_h)
+        scan_coordinates_10x = []
 
-        # expand rectangle to fit full windows
-        new_w = num_windows_x * target_w
-        new_h = num_windows_y * target_h
+        for chip in chips:
+            x, y, w, h = chip
 
-        # optionally keep center fixed
-        center_x = x + w // 2
-        center_y = y + h // 2
+            num_windows_x = math.ceil(w / window_w)
+            num_windows_y = math.ceil(h / window_h)
 
-        # recompute top-left corner
-        new_x = max(0, center_x - new_w // 2)
-        new_y = max(0, center_y - new_h // 2)
+            grid_w = num_windows_x * window_w
+            grid_h = num_windows_y * window_h
 
-        windows = []
-        for i in range(num_windows_x):
-            for j in range(num_windows_y):
-                wx = new_x + i * target_w
-                wy = new_y + j * target_h
-                windows.append((wx, wy, target_w, target_h))
+            chip_center_x = x + w // 2
+            chip_center_y = y + h // 2
 
-        for wx, wy, ww, wh in windows:
-            cv2.rectangle(self.true_map, (wx, wy), (wx+ww, wy+wh), (0,255,0), 1)
-        '''
+            start_x = max(0, chip_center_x - grid_w // 2)
+            start_y = max(0, chip_center_y - grid_h // 2)
+
+            start_pos_x = (chip_center_x - scan_center_x)
+            start_pos_y = (chip_center_y - scan_center_y)
+
+            scan_coordinates_10x.append([start_pos_x, start_pos_y, num_windows_x, num_windows_y])
+
+            for i in range(num_windows_x):
+                for j in range(num_windows_y):
+                    wx = start_x + i * window_w
+                    wy = start_y + j * window_h
+
+                    cv2.rectangle(self.true_map, (wx, wy), (wx + window_w, wy + window_h), (0, 255, 0), 5)
 
     def generate_rect_coords(self, x, y):
 
@@ -1106,8 +1199,10 @@ class App:
             self.img_label.pack(fill=BOTH, expand=True)
             self.map_canvas.pack_forget() # Hide map canvas
 
+        self.root.update()
+
     def draw_map(self):
-        map_img = Image.fromarray((self.filter_map * 255).astype(np.uint8), mode="L")
+        map_img = Image.fromarray(self.filter_map, mode="L")
 
         canvas_w = self.map_canvas.winfo_width()
         canvas_h = self.map_canvas.winfo_height()
@@ -1171,8 +1266,12 @@ class App:
         cx = w // 2
         cy = h // 2
 
-        crop_w = int(w * CENTER_CROP_WIDTH_RATIO)
-        crop_h = int(h * CENTER_CROP_HEIGHT_RATIO)
+        if self.magnification == "2x":
+            crop_w = int(w * CENTER_CROP_WIDTH_RATIO_2X)
+            crop_h = int(h * CENTER_CROP_HEIGHT_RATIO_2X)
+        elif self.magnification == "10x":
+            crop_w = int(w * CENTER_CROP_WIDTH_RATIO_10X)
+            crop_h = int(h * CENTER_CROP_HEIGHT_RATIO_10X)
 
         x1 = cx - crop_w // 2
         y1 = cy - crop_h // 2
@@ -1347,8 +1446,12 @@ class App:
         avg_frame = (sum_frame / num_images).astype(self.current_frame.dtype)
 
         h, w = avg_frame.shape[:2]
-        crop_w = int(w * CENTER_CROP_WIDTH_RATIO)
-        crop_h = int(h * CENTER_CROP_HEIGHT_RATIO)
+        if self.magnification == "2x":
+            crop_w = int(w * CENTER_CROP_WIDTH_RATIO_2X)
+            crop_h = int(h * CENTER_CROP_HEIGHT_RATIO_2X)
+        elif self.magnification == "10x":
+            crop_w = int(w * CENTER_CROP_WIDTH_RATIO_10X)
+            crop_h = int(h * CENTER_CROP_HEIGHT_RATIO_10X)
         cx, cy = w // 2, h // 2
 
         x1 = cx - crop_w // 2
