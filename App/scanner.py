@@ -14,9 +14,9 @@ import tkinter.font as tkFont
 from PIL import Image, ImageTk
 
 from pathlib import Path
-home_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(home_dir)
-api_path = Path(home_dir) / "APIs"
+home_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+parent_dir = home_dir.parent
+api_path = home_dir / "APIs"
 
 sys.path.insert(0, str(parent_dir))
 sys.path.insert(0, str(api_path))
@@ -622,7 +622,10 @@ class App:
         self.btn4.bind("<ButtonPress-1>", lambda e: self.change_objective(4))
         self.btn5.bind("<ButtonPress-1>", lambda e: self.change_objective(5))
 
-        self.change_objective(1)
+        #self.change_objective(1)
+
+        tc.turn_to_position(1)
+        self.sharpness_var.set(f"Objective: {1}")
 
         return self.objective_control_panel
 
@@ -859,11 +862,18 @@ class App:
             pass
 
     def change_objective(self, position):
-        tc.turn_to_position(position)
-
+        global z_pos
         if position == 1:
+            if tc.check_position() == 2:
+                z_pos += 3400
+                pc.go_to_z_pos(z_pos)
+                self.auto_focus(start_range=1000, accuracy=100)
             self.magnification = "2x"
         elif position == 2:
+            if tc.check_position() == 1:
+                z_pos -= 3400
+                pc.go_to_z_pos(z_pos)
+                self.auto_focus(start_range=200, accuracy=25)
             self.magnification = "10x"
         elif position == 3:
             self.magnification = None
@@ -872,6 +882,7 @@ class App:
         elif position == 5:
             self.magnification = None
 
+        tc.turn_to_position(position)
         self.sharpness_var.set(f"Objective: {position}")
 
     def find_sharpness(self, image):
@@ -917,10 +928,10 @@ class App:
 
         return best_z
 
-    def auto_focus(self, start_range = 3000):
+    def auto_focus(self, start_range = 3000, accuracy=100):
         _range = start_range
         best_z = pc.z
-        while _range > 100:
+        while _range >= accuracy:
             best_z = self.find_best_focus(best_z-_range, best_z+_range, 10)
             _range = int(_range / 2)
             image = self.capture_frame()
@@ -939,9 +950,11 @@ class App:
 
         print("Run")
 
-        center_x, center_y, zoom_2x = self.run_2x_scan()
+        center_x, center_y, scale_2x = self.run_2x_scan()
         chips = self.find_chips(self.filter_map)
-        scan_coordinates = self.generate_10x_scan_coordinates(chips, center_x, center_y, zoom_2x)
+        scan_coordinates = self.generate_10x_scan_coordinates(chips, center_x, center_y, scale_2x)
+
+        self.change_objective(2)
 
     def run_2x_scan(self, zoom=6):
 
@@ -1011,70 +1024,56 @@ class App:
 
         return center_x, center_y, zoom
 
-    def run_10x_scan(self, zoom=6):
+    def run_10x_scan(self, scan_coordinates_10x, zoom=4,):
 
         print("10x scan running...")
 
         self.set_view("Map", True)
 
-        start_time = time.time()
-        self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
-        self.filter_map = np.zeros((3000, 3000), dtype=np.uint8)
-        self.scan_running = True
-
-        global x_pos, y_pos
-
-        center_x = x_pos
-        center_y = y_pos
-
-        coords, total_frames = self.generate_rect_coords(3, 3)
-
         i = 0
-        for offset_x, offset_y in coords:
-            target_x = center_x + offset_x * X_SIZE_2 * CENTER_CROP_WIDTH_RATIO_10X
-            target_y = center_y - offset_y * Y_SIZE_2 * CENTER_CROP_HEIGHT_RATIO_10X
+        for coordinates in scan_coordinates_10x:
+            
+            i += 1
+            self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
+            self.scan_running = True
 
-            pc.go_to_pos(target_x, target_y)
-            x_pos, y_pos = target_x, target_y
+            global x_pos, y_pos
 
-            pc.wait_until_not_busy()
+            center_x = coordinates[0]
+            center_y = coordinates[1]
 
-            img = self.capture_frame()
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            coords, _ = self.generate_rect_coords(coordinates[2], coordinates[3])
 
-            binary = chip_edge_classifier.chip_filter(img, display=False)
-            img_binary_rgb = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+            for offset_x, offset_y in coords:
+                target_x = center_x + offset_x * X_SIZE_2 * CENTER_CROP_WIDTH_RATIO_10X
+                target_y = center_y - offset_y * Y_SIZE_2 * CENTER_CROP_HEIGHT_RATIO_10X
 
-            if self.view_mode == "Camera View":
+                pc.go_to_pos(target_x, target_y)
+                x_pos, y_pos = target_x, target_y
+
+                pc.wait_until_not_busy()
+
+                img = self.capture_frame()
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
                 self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            elif self.view_mode == "Filter":
-                self.display_live_image(cv2.cvtColor(chip_edge_classifier.chip_filter(img), cv2.COLOR_GRAY2RGB))
 
-            map_x = int(self.filter_map.shape[1] / 2 - (offset_x + 0.5) * img_binary_rgb.shape[1] / zoom)
-            map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_binary_rgb.shape[0] / zoom)
+                map_x = int(self.filter_map.shape[1] / 2 - (offset_x + 0.5) * img_rgb.shape[1] / zoom)
+                map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_rgb.shape[0] / zoom)
 
-            h, w = img_binary_rgb.shape[:2]
-            img_small = img_rgb[::zoom, ::zoom]
-            img_binary_small = img_binary_rgb[::zoom, ::zoom, 0]
+                h, w = img_rgb.shape[:2]
+                img_small = img_rgb[::zoom, ::zoom]
 
-            x_start = max(0, map_x)
-            y_start = max(0, map_y)
-            x_end = min(self.filter_map.shape[1], x_start + img_binary_small.shape[1])
-            y_end = min(self.filter_map.shape[0], y_start + img_binary_small.shape[0])
+                x_start = max(0, map_x)
+                y_start = max(0, map_y)
+                x_end = min(self.filter_map.shape[1], x_start + img_small.shape[1])
+                y_end = min(self.filter_map.shape[0], y_start + img_small.shape[0])
 
-            self.true_map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
-            self.filter_map[y_start:y_end, x_start:x_end] = img_binary_small[:y_end - y_start, :x_end - x_start]
+                self.true_map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
 
-            elapsed = time.time() - start_time
-            elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
-            progress_percent = f"{(i+1)}/{total_frames} ({(i+1)*100//total_frames}%)"
-            i = i + 1
-    
-            self.update_scan_status(progress=progress_percent, elapsed_time=elapsed_str)
+            pc.go_to_pos(center_x, center_y)
 
         self.scan_running = False
-        pc.go_to_pos(center_x, center_y)
-        print("Scan finished!")
 
     def find_chips(self, binary_map):
         binary_map = (self.filter_map > 0).astype("uint8") * 255
@@ -1090,11 +1089,10 @@ class App:
             cv2.rectangle(self.true_map, (x, y), (x+w, y+h), (255,255,0), 5)
 
         return chips
-    
-    def generate_10x_scan_coordinates(self, chips, scan_center_x, scan_center_y, zoom):
+    def generate_10x_scan_coordinates(self, chips, scan_center_x, scan_center_y, scale):
 
-        window_w = int(self.hcam.get_Size()[0] * CENTER_CROP_WIDTH_RATIO_2X / zoom / 5 * CENTER_CROP_WIDTH_RATIO_10X)
-        window_h = int(self.hcam.get_Size()[1] * CENTER_CROP_HEIGHT_RATIO_2X / zoom / 5 * CENTER_CROP_HEIGHT_RATIO_10X)
+        window_w = int(self.hcam.get_Size()[0] * CENTER_CROP_WIDTH_RATIO_2X / scale / 5 * CENTER_CROP_WIDTH_RATIO_10X)
+        window_h = int(self.hcam.get_Size()[1] * CENTER_CROP_HEIGHT_RATIO_2X / scale / 5 * CENTER_CROP_HEIGHT_RATIO_10X)
 
         scan_coordinates_10x = []
 
@@ -1113,9 +1111,8 @@ class App:
             start_x = max(0, chip_center_x - grid_w // 2)
             start_y = max(0, chip_center_y - grid_h // 2)
 
-            start_pos_x = (chip_center_x - scan_center_x)
-            start_pos_y = (chip_center_y - scan_center_y)
-
+            start_pos_x = - (chip_center_x - self.true_map.shape[1] / 2) * (X_SIZE_2 * CENTER_CROP_WIDTH_RATIO_2X) / (self.hcam.get_Size()[0] / scale * CENTER_CROP_WIDTH_RATIO_2X) + scan_center_x
+            start_pos_y = - (chip_center_y - self.true_map.shape[0] / 2) * (Y_SIZE_2 * CENTER_CROP_WIDTH_RATIO_2X) / (self.hcam.get_Size()[1] / scale * CENTER_CROP_WIDTH_RATIO_2X) + scan_center_y
             scan_coordinates_10x.append([start_pos_x, start_pos_y, num_windows_x, num_windows_y])
 
             for i in range(num_windows_x):
@@ -1123,7 +1120,11 @@ class App:
                     wx = start_x + i * window_w
                     wy = start_y + j * window_h
 
-                    cv2.rectangle(self.true_map, (wx, wy), (wx + window_w, wy + window_h), (0, 255, 0), 5)
+                    cv2.rectangle(self.true_map, (wx, wy), (wx + window_w, wy + window_h), (0, 255, 0), 5, cv2.LINE_AA)
+
+            cv2.circle(self.true_map, (chip_center_x, chip_center_y), 8, (0, 0, 255), -1, cv2.LINE_AA)
+
+        cv2.circle(self.true_map, (int(self.true_map.shape[1] / 2), int(self.true_map.shape[0] / 2)), 8, (255, 0, 0), -1, cv2.LINE_AA)
 
     def generate_rect_coords(self, x, y):
 
@@ -1407,18 +1408,23 @@ class App:
         max_speed = self.hcam.MaxSpeed()
         self.hcam.put_Speed(max_speed)
 
-    def save_image(self, save_dir=None, filename=None):
+    def save_image(self, image=None, save_dir=None, filename=None):
         if not hasattr(self, "current_frame") or self.current_frame is None:
             print("No frame available to save.")
             return
         
         if save_dir is None:
             save_dir = home_dir / "Saved Images" / "Selected Images"
+        else:
+            save_dir = Path(save_dir)
+
         save_dir.mkdir(parents=True, exist_ok=True)
 
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filepath = save_dir / f"image_{timestamp}.png"
+        else:
+            filepath = save_dir / filename
 
         cv2.imwrite(str(filepath), self.current_frame)
 

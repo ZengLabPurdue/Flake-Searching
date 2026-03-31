@@ -111,6 +111,7 @@ class Prior_Controller():
     def go_to_pos(self, new_x, new_y):
         self.x = new_x
         self.y = new_y
+        print(f"Going to ({new_x}, {new_y})")
         self.wait_until_not_busy()
         self.cmd(f"controller.stage.goto-position {self.x} {self.y}")
         self.cmd("controller.stage.speed.get")
@@ -119,8 +120,11 @@ class Prior_Controller():
     def get_curr_pos(self):
         self.wait_until_not_busy()
         position = self.cmd("controller.stage.position.get")
-        self.x = int(position[1].split(",")[0])
-        self.y = int(position[1].split(",")[1])
+        try:
+            self.x = int(position[1].split(",")[0])
+            self.y = int(position[1].split(",")[1])
+        except Exception as e:
+            print(position)
         self.z = self.get_curr_z_pos()
 
     def set_z_velocity(self, velocity):
