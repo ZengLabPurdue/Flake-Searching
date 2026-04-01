@@ -122,7 +122,7 @@ class Prior_Controller():
     def go_to_pos(self, new_x, new_y):
         self.x = new_x
         self.y = new_y
-        print(f"Going to ({new_x}, {new_y})")
+        #print(f"Going to ({new_x}, {new_y})")
         self.wait_until_not_busy()
         self.cmd(f"controller.stage.goto-position {self.x} {self.y}")
         self.wait_until_not_busy()

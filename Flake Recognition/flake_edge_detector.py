@@ -5,73 +5,28 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 from tkinter import filedialog
 
-#---------------------------
-# Program Parameters
-#---------------------------
-
 num_contours = 100
 contour_thickness = 10
 contour_color = (0,0,0) # in BGR
-
-#----------------------------
-# Load Image
-#----------------------------
 
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 image = cv2.imread(image_path, cv2.IMREAD_COLOR)
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-#----------------------------
-# Image Processing
-#----------------------------
-
-#
-# Filters
-#
-
-# Apply Gaussian blur to reduce noise
 blurred_image = cv2.GaussianBlur(gray_image, (5, 5), 1.4)
-
-# Apply Average blur to reduce noise
-#blurred_image = cv2.blur(gray_image, (100,100))
-
-
-#
-# Colormap
-#
-
-# Normalize the image to 0-1 range for matplotlib
 norm_image = (blurred_image- blurred_image.min()) / (blurred_image.max() - blurred_image.min())
-
-# ['viridis', 'plasma', 'magma', 'jet']
 colormap = cm.viridis
-
-# Applying the colormap to get an RGB image
 processed_image = colormap(norm_image)[..., :3]
-processed_image_uint8 = (processed_image * 255).astype(np.uint8) # Convert to uint8 for openCV
+processed_image_uint8 = (processed_image * 255).astype(np.uint8)
 
-#----------------------------
-# Contour Processing
-#----------------------------
-
-#
-# Canny Edge Detector
-#
 '''
 canny = cv2.Canny(blurred_image, 20, 40)
 '''
 
-#
-# Laplacian Edge Detector
-#
 '''
 laplacian = cv2.Laplacian(blurred_image, cv2.CV_64F)
 laplacian_abs = cv2.convertScaleAbs(laplacian)
 '''
-
-#
-# Morphological Gradient Detection
-#
 
 gray = cv2.cvtColor(processed_image_uint8, cv2.COLOR_BGR2GRAY)
 
@@ -85,21 +40,15 @@ thresh = cv2.adaptiveThreshold(gradient, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                cv2.THRESH_BINARY_INV, 15, 3)
 
 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-#print(f"Number of contours found: {len(contours)}")
-
-#
-# Displaying Image
-#
 
 plt.figure(figsize=(10, 5))
 
-# Original image
 plt.subplot(1, 3, 1)
 plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 plt.title('Original Image')
 plt.axis('off')
 
-# Gaussian Blur
+
 plt.subplot(1, 3, 2)
 plt.imshow(processed_image_uint8)
 plt.title('Gaussian Blurred Image')
@@ -113,11 +62,6 @@ plt.axis('off')
 
 plt.show()
 
-#
-# Filtering Contours
-#
-
-# Find most important contours
 contourAreaList = []
 for contour in contours:
     area = cv2.contourArea(contour)
@@ -127,24 +71,14 @@ sortedContourAreaList = sorted(contourAreaList, key=lambda student: student[1], 
 
 sortedContours = [contour[0] for contour in sortedContourAreaList]
 
-#
-# Displaying Contoured Image
-#
-
-# Drawing Contour Traces
 tracedContourImage = image.copy()
 cv2.drawContours(tracedContourImage, sortedContours[:num_contours], -1, contour_color, contour_thickness)
 plt.imshow(cv2.cvtColor(tracedContourImage, cv2.COLOR_BGR2RGB))
 plt.axis('off')
 plt.show() 
 
-#------------------------------------
-# Finding Width and Length of Contour
-#------------------------------------
-
 boundedContourImage = image.copy()
 rect = cv2.minAreaRect(contour)
-# rect = ((center_x, center_y), (width, height), angle)
 
 distanceFromBorder = 0
 font = cv2.FONT_HERSHEY_SIMPLEX
@@ -180,10 +114,6 @@ cv2.drawContours(boundedContourImage, [box], 0, (255, 255, 255), 5)
 plt.imshow(cv2.cvtColor(boundedContourImage, cv2.COLOR_BGR2RGB))
 plt.axis('off')
 plt.show() 
-
-#----------------------------
-# Finding Points in Contours
-#----------------------------
 
 filledContourImage = image.copy()
 contour = np.array(sortedContours[0])
