@@ -100,7 +100,7 @@ class App:
         })
 
         self.panels.append({
-            "name": "Control Panel",
+            "name": "Stage Control Panel",
             "frame": self.init_manual_control_panel(),
             "var": BooleanVar(value=False)
         })
@@ -862,27 +862,32 @@ class App:
             pass
 
     def change_objective(self, position):
-        global z_pos
+
+        current_z = pc.get_curr_z_pos()
         if position == 1:
             if tc.check_position() == 2:
-                z_pos += 3400
-                pc.go_to_z_pos(z_pos)
-                self.auto_focus(start_range=1000, accuracy=100)
+                current_z += 3400
+                pc.go_to_z_pos(current_z)
+                tc.turn_to_position(position)
+                self.auto_focus(start_range=1000, accuracy=100, wait_time=0)
             self.magnification = "2x"
         elif position == 2:
             if tc.check_position() == 1:
-                z_pos -= 3400
-                pc.go_to_z_pos(z_pos)
-                self.auto_focus(start_range=200, accuracy=25)
+                current_z -= 3400
+                pc.go_to_z_pos(current_z)
+                tc.turn_to_position(position)
+                self.auto_focus(start_range=1000, accuracy=100, wait_time=0.1)
             self.magnification = "10x"
         elif position == 3:
+            tc.turn_to_position(position)
             self.magnification = None
         elif position == 4:
+            tc.turn_to_position(position)
             self.magnification = None
         elif position == 5:
+            tc.turn_to_position(position)
             self.magnification = None
 
-        tc.turn_to_position(position)
         self.sharpness_var.set(f"Objective: {position}")
 
     def find_sharpness(self, image):
@@ -897,7 +902,7 @@ class App:
 
         return sharpness
 
-    def find_best_focus(self, z_start, z_end, steps):
+    def find_best_focus(self, z_start, z_end, steps, wait_time=0):
 
         best_focus = -1
         best_z = z_start
@@ -915,6 +920,8 @@ class App:
             pc.go_to_z_pos(z)
             self.get_position()
 
+            time.sleep(wait_time)
+
             image = self.capture_frame(num_images=1)
             score = self.find_sharpness(image)
 
@@ -928,11 +935,11 @@ class App:
 
         return best_z
 
-    def auto_focus(self, start_range = 3000, accuracy=100):
+    def auto_focus(self, start_range = 3000, accuracy=100, wait_time=0):
         _range = start_range
-        best_z = pc.z
+        best_z = pc.get_curr_z_pos()
         while _range >= accuracy:
-            best_z = self.find_best_focus(best_z-_range, best_z+_range, 10)
+            best_z = self.find_best_focus(best_z-_range, best_z+_range, 10, wait_time=wait_time)
             _range = int(_range / 2)
             image = self.capture_frame()
             sharpness = self.find_sharpness(image)
@@ -1056,7 +1063,10 @@ class App:
                 img = self.capture_frame()
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-                self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                if self.view_mode == "Camera View":
+                    self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                elif self.view_mode == "Filter":
+                    pass
 
                 map_x = int(self.filter_map.shape[1] / 2 - (offset_x + 0.5) * img_rgb.shape[1] / zoom)
                 map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_rgb.shape[0] / zoom)

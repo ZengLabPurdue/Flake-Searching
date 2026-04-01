@@ -92,9 +92,20 @@ class Prior_Controller():
         return end_time
         
     def is_busy(self):
-        if (self.cmd("controller.stage.busy.get")[1] == "2") | (self.cmd("controller.z.busy.get")[1] == "4") | (self.cmd("controller.stage.busy.get")[1] == "1") | (self.cmd("controller.stage.busy.get")[1] == "3"):
+        '''
+        if ((self.cmd("controller.stage.busy.get")[1] == "1") |  
+            (self.cmd("controller.stage.busy.get")[1] == "2") | 
+            (self.cmd("controller.stage.busy.get")[1] == "3") |
+            (self.cmd("controller.z.busy.get")[1] == "4")):
             return True
-        else: return False
+        else: 
+            return False
+        '''
+
+        stage_busy = self.cmd("controller.stage.busy.get")[1]
+        z_busy = self.cmd("controller.z.busy.get")[1]
+
+        return stage_busy != "0" or z_busy != "0"
 
     def set_velocity(self, velocity):
         self.wait_until_not_busy()
@@ -114,6 +125,7 @@ class Prior_Controller():
         print(f"Going to ({new_x}, {new_y})")
         self.wait_until_not_busy()
         self.cmd(f"controller.stage.goto-position {self.x} {self.y}")
+        self.wait_until_not_busy()
         self.cmd("controller.stage.speed.get")
         # time.sleep(1)
 
@@ -125,12 +137,15 @@ class Prior_Controller():
             self.y = int(position[1].split(",")[1])
         except Exception as e:
             print(position)
+            self.stop()
         self.z = self.get_curr_z_pos()
+        return self.x, self.y, self.z
 
     def set_z_velocity(self, velocity):
-        self.wait_until_not_busy()
         self.z_velocity = velocity
+        self.wait_until_not_busy()
         self.cmd(f"controller.z.speed.set {self.velocity}")
+        self.wait_until_not_busy()
         self.cmd("controller.z.speed.get")
 
     def set_z_acceleration(self, acceleration):
@@ -143,6 +158,7 @@ class Prior_Controller():
         self.z = new_z * 10
         self.wait_until_not_busy()
         self.cmd(f"controller.z.goto-position {self.z}")
+        self.wait_until_not_busy()
         self.cmd("controller.z.speed.get")
         # time.sleep(1)
 
@@ -204,3 +220,8 @@ class Prior_Controller():
     def disconnect(self):
         self.wait_until_not_busy()
         self.cmd("controller.disconnect")
+
+    def stop(self):
+        self.stop_x_motor()
+        self.stop_y_motor()
+        self.stop_z_motor()
