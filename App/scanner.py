@@ -1239,6 +1239,11 @@ class App:
         self.display_map()
         self.info_panel.update()
 
+    # ------------- Flake Detection -------------
+
+    def run_10x_flake_detection(self):
+        pass
+
     # ------------- Display Functions -------------
 
     def set_view(self, mode, filter_status):
