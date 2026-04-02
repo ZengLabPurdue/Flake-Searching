@@ -5,6 +5,8 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import sys
 from pathlib import Path
 
+import time
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -23,10 +25,6 @@ sys.path.insert(0, str(brody_work_path))
 
 import single_frame_pipeline
 
-image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
-image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
-image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
 class flake_identifier():
     def __init__(self):
         try:
@@ -36,6 +34,7 @@ class flake_identifier():
             print(f"Error loading model: {e}")
 
     def identify_flakes(self, image):
+        start_time = time.time()
         masked_image, contours = single_frame_pipeline.process_frame(image)
 
         scanned_image = image_rgb.copy()
@@ -109,7 +108,8 @@ class flake_identifier():
         plt.axis("off")
         plt.show()
         '''
-        
+
+        print(f"Time taken: {time.time() - start_time:.2f}s")        
         plt.figure(figsize=(10, 8))
         plt.imshow(scanned_image)
         plt.title("Image with Contours and Flake Colors")
@@ -118,5 +118,12 @@ class flake_identifier():
 
         return scanned_image, flakes
 
+
+'''
+image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
+image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
+image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+
 flake_id = flake_identifier()
 flake_id.identify_flakes(image_rgb)
+'''

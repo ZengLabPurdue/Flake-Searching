@@ -1,5 +1,8 @@
 import os
 import sys
+import threading
+from queue import Queue
+
 import time
 from datetime import datetime
 
@@ -25,6 +28,7 @@ import amcam
 from prior_api import Prior_Controller
 from turret_api import Turret_Controller
 import chip_edge_classifier
+import flake_identifier
 
 DLL_PATH = os.getcwd() + r"\APIs\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 PRIOR_COM_PORT = sys.argv[1]
@@ -973,7 +977,18 @@ class App:
 
         self.change_objective(2)
 
-        self.run_10x_scan(scan_coordinates_10x=scan_coordinates, scan_path=scan_path)
+        image_queue = Queue(maxsize=200)
+        #self.run_10x_scan(scan_coordinates_10x=scan_coordinates, scan_path=scan_path, image_queue=image_queue)
+        #self.run_10x_flake_detection(image_queue=image_queue)
+
+        scan_10x_thread = threading.Thread(target=self.run_10x_scan, args=(scan_coordinates,), kwargs={"scan_path": scan_path, "image_queue": image_queue})
+        flake_detection_thread = threading.Thread(target=self.run_10x_flake_detection, kwargs={"image_queue": image_queue})
+
+        scan_10x_thread.start()
+        flake_detection_thread.start()
+
+        scan_10x_thread.join()
+        flake_detection_thread.join()
 
     def run_2x_scan(self, scan_path=None, zoom=6):
 
@@ -1012,7 +1027,7 @@ class App:
             img = self.capture_frame()
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-            image_path = path / f"img_2x_{i}.png"
+            image_path = path / f"img_2x_R_{i}.png"
             image_path.parent.mkdir(parents=True, exist_ok=True)
             self.save_image(image=img, filename=image_path)
 
@@ -1053,7 +1068,7 @@ class App:
 
         return center_x, center_y, zoom
 
-    def run_10x_scan(self, scan_coordinates_10x, scan_path=None, zoom=4):
+    def run_10x_scan(self, scan_coordinates_10x, scan_path=None, image_queue=None,zoom=4):
 
         print("10x scan running...")
 
@@ -1095,14 +1110,17 @@ class App:
                 img = self.capture_frame()
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-                image_path = path / f"Chip {i} ({center_x}, {center_y})" / f"img_10x_{j}.png"
+                image_path = path / f"Chip {i} ({center_x}, {center_y})" / f"img_10x_R_{j}.png"
                 image_path.parent.mkdir(parents=True, exist_ok=True)
                 self.save_image(image=img, filename=image_path)
+
+                if image_queue is not None:
+                    image_queue.put(image_path)
 
                 if self.view_mode == "Camera View":
                     if self.filter_var.get():
                         self.filter_var.set(False)
-                    self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                    self.root.after(0, lambda img=img: self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
 
                 map_x = int(self.filter_map.shape[1] / 2 - (offset_x + 0.5) * img_rgb.shape[1] / max_zoom)
                 map_y = int(self.filter_map.shape[0] / 2 + (offset_y - 0.5) * img_rgb.shape[0] / max_zoom)
@@ -1119,8 +1137,11 @@ class App:
 
                 self.true_map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
 
-                self.display_map()
+                if self.view_mode == "Map View":
+                    self.root.after(0, self.display_map)
 
+        if image_queue is not None:
+            image_queue.put(None)
         self.scan_running = False
 
     def find_chips(self, binary_map):
@@ -1175,7 +1196,7 @@ class App:
 
         cv2.circle(self.true_map, (int(self.true_map.shape[1] / 2), int(self.true_map.shape[0] / 2)), 8, (255, 0, 0), -1, cv2.LINE_AA)
 
-        self.root.update()
+        self.root.after(0, self.display_map)
 
         return scan_coordinates_10x
 
@@ -1239,8 +1260,43 @@ class App:
 
     # ------------- Flake Detection -------------
 
-    def run_10x_flake_detection(self):
-        pass
+    '''
+    def run_10x_flake_detection(self, scan_path=None, chip_data=None):
+        chips_scanned = 0
+        while chips_scanned < len(chip_data):   
+            scanned_images = 0
+            chip_folder = scan_path / f"Chip {chips_scanned + 1} ({chip_data[chips_scanned][0]}, {chip_data[chips_scanned][1]})" / "All Images" / "10x"
+            while scanned_images < chip_data[chips_scanned][2]:
+                file_name = f"img_10x_R_{scanned_images+1}.png"
+                if not (chip_folder / file_name).exists():
+                    print(f"Waiting for image {file_name}...")
+                    time.sleep(0.1)
+                    continue
+               
+                img = cv2.imread(str(chip_folder / file_name))
+                scanned_img = flake_identifier.identify_flakes(img)
+
+                image_path = scan_path / "All Images" / "10x" / f"img_10x_S_{scanned_images}.png" # _S for "Scanned"
+                image_path.parent.mkdir(parents=True, exist_ok=True)
+                self.save_image(image=scanned_img, filename=image_path)
+ 
+                scanned_images += 1
+                print(f"Scanned image {scanned_images}/{chip_data[chips_scanned][2]} for Chip {chips_scanned + 1}")
+            chips_scanned += 1
+            print(f"Chips scanned: {chips_scanned}/{len(chip_data)}")
+    '''
+
+    def run_10x_flake_detection(self, image_queue=None):
+        while True:
+            img_path = image_queue.get()
+            if img_path is None:
+                break
+            img = cv2.imread(str(img_path))
+            scanned_img = flake_identifier.identify_flakes(img)
+            out_path = img_path.with_name(img_path.name.replace("R", "S"))
+            img_path.parent.mkdir(parents=True, exist_ok=True)
+            self.save_image(scanned_img, out_path)
+            image_queue.task_done()
 
     # ------------- Display Functions -------------
 
