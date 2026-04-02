@@ -1066,8 +1066,6 @@ class App:
 
         i = 0
         for coordinates in scan_coordinates_10x:
-            
-            print(coordinates)
 
             i += 1
             self.true_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
