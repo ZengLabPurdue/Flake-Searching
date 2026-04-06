@@ -17,6 +17,7 @@ import tkinter.font as tkFont
 from PIL import Image, ImageTk
 
 from pathlib import Path
+
 home_dir = Path(os.path.dirname(os.path.abspath(__file__)))
 parent_dir = home_dir.parent
 api_path = home_dir / "APIs"
@@ -52,6 +53,7 @@ MAGNIFICATION = 2
 try:
     pc = Prior_Controller(PRIOR_COM_PORT, DLL_PATH)
     tc = Turret_Controller(TURRET_COM_PORT)
+    fi = flake_identifier.Flake_Identifier()
     pc.get_curr_pos()
     x_pos = pc.x
     y_pos = pc.y
@@ -884,17 +886,17 @@ class App:
         current_z = pc.get_curr_z_pos()
         if position == 1:
             if tc.check_position() == 2:
-                current_z += 3400
+                current_z -= 1000
                 pc.go_to_z_pos(current_z)
                 tc.turn_to_position(position)
                 self.auto_focus()
             self.magnification = "2x"
         elif position == 2:
             if tc.check_position() == 1:
-                current_z -= 3400
+                current_z += 1000
                 pc.go_to_z_pos(current_z)
                 tc.turn_to_position(position)
-                self.auto_focus(start_range=1000, accuracy=250, range_step=25)
+                self.auto_focus(start_range=500, accuracy=10, steps=20)
             self.magnification = "10x"
         elif position == 3:
             tc.turn_to_position(position)
@@ -920,47 +922,82 @@ class App:
 
         return sharpness
 
-    def find_best_focus(self, z_start, z_end, steps):
+    def get_raw_sharpness(self, num_images=2):
+        self.wait_until_new_frame()
 
-        best_focus = -1
+        sharpness = 0
+
+        for _ in range(num_images):
+            self.wait_until_new_frame()
+            sharpness += self.find_sharpness(self.current_frame)
+
+        sharpness /= num_images
+
+        return sharpness
+
+    def discard_initial_frame(self, position):
+        discard_z = position
+        pc.go_to_z_pos(discard_z)
+        self.get_position()
+        self.get_raw_sharpness(num_images=3)
+
+    def find_best_focus(self, z_start, z_end, steps, tolerance=0.5):
+
+        best_sharpness = -1
         best_z = z_start
 
         z_positions = [
-            z_start + i*(z_end-z_start)/steps
+            z_start + i * (z_end - z_start) / steps
             for i in range(steps+1)
         ]
 
-        if (abs(pc.z - z_positions[0]) < abs(pc.z - z_positions[-1])):
+        print(f"Speed: {pc.get_z_velocity()}, Step: {int((z_end - z_start) / steps)}")
+        #pc.set_velocity(int((z_end - z_start) / steps))
+        
+        curr_z = pc.get_curr_z_pos()
+
+        if abs(curr_z - z_positions[0]) < abs(curr_z - z_positions[-1]):
             z_positions.reverse()
+
+        self.discard_initial_frame(z_positions[0])
 
         for z in z_positions:
 
             pc.go_to_z_pos(z)
             self.get_position()
 
-            image = self.capture_frame(num_images=1)
-            score = self.find_sharpness(image)
+            sharpness = self.get_raw_sharpness(num_images=3)
 
-            #print(f"Z: {z}, Sharpness: {score}")
+            print(f"Z: {z:>12.1f} | Sharpness: {sharpness:>8.3f} | Best Sharpness: {best_sharpness:>8.3f} | Best Z: {best_z:>12.1f}")
 
-            if score > best_focus:
-                best_focus = score
+            if sharpness > best_sharpness:
+                best_sharpness = sharpness
                 best_z = z
+                drops = 0
+            else:
+                if sharpness < best_sharpness - tolerance:
+                    drops += 1
+
+            if drops >= 4:
+                print("Focus peak passed")
+                break
 
         pc.go_to_z_pos(best_z)
 
         return best_z
 
-    def auto_focus(self, start_range = 3000, accuracy=100, range_step=10):
+    def auto_focus(self, start_range=3000, accuracy=50, steps=20):
+        start_time = time.time()
         _range = start_range
         best_z = pc.get_curr_z_pos()
         while _range >= accuracy:
-            best_z = self.find_best_focus(best_z-_range, best_z+_range, range_step)
-            _range = int(_range / 2)
-            image = self.capture_frame()
-            #sharpness = self.find_sharpness(image)
-            #print(f"Best Z: {best_z}, Sharpness: {sharpness}, Range: {_range}")
-            #print("-----------------------------------")
+            best_z = self.find_best_focus(best_z-_range, best_z+_range, steps)
+            pc.go_to_z_pos(best_z)
+            self.discard_initial_frame(best_z)
+            print(f"Best Z: {best_z:>12.1f} | Sharpness: {self.get_raw_sharpness(num_images=3):>8.3f} | Range: {_range}")
+            print("-----------------------------------")
+            _range = int(_range / (steps / 2))
+        print(f"Time taken: {time.time() - start_time:.2f}s")
 
     def stop_all_motors(self):
         pc.stop_all_motors()
@@ -968,6 +1005,8 @@ class App:
     # ------------- Scanning Functions -------------
 
     def run_full_scan(self):
+
+        start_time = time.time()
 
         scan_path = home_dir / "Saved Images" / "Scan" / datetime.now().strftime("Full Scan (%Y-%m-%d) (%H-%M-%S)")
 
@@ -978,17 +1017,22 @@ class App:
         self.change_objective(2)
 
         image_queue = Queue(maxsize=200)
-        #self.run_10x_scan(scan_coordinates_10x=scan_coordinates, scan_path=scan_path, image_queue=image_queue)
-        #self.run_10x_flake_detection(image_queue=image_queue)
 
-        scan_10x_thread = threading.Thread(target=self.run_10x_scan, args=(scan_coordinates,), kwargs={"scan_path": scan_path, "image_queue": image_queue})
-        flake_detection_thread = threading.Thread(target=self.run_10x_flake_detection, kwargs={"image_queue": image_queue})
+        flake_detection_thread = threading.Thread(
+            target=self.run_10x_flake_detection,
+            kwargs={"image_queue": image_queue},
+            daemon=True
+        )
 
-        scan_10x_thread.start()
         flake_detection_thread.start()
 
-        scan_10x_thread.join()
+        self.run_10x_scan(scan_coordinates, scan_path=scan_path, image_queue=image_queue)
+        image_queue.put(None)
+
         flake_detection_thread.join()
+
+        print("Full scan finished!")
+        print(f"Time taken: {time.time() - start_time:.2f}s")
 
     def run_2x_scan(self, scan_path=None, zoom=6):
 
@@ -1068,9 +1112,7 @@ class App:
 
         return center_x, center_y, zoom
 
-    def run_10x_scan(self, scan_coordinates_10x, scan_path=None, image_queue=None,zoom=4):
-
-        print("10x scan running...")
+    def run_10x_scan(self, scan_coordinates_10x, scan_path=None, image_queue=None, zoom=4):
 
         self.set_view("Map", False)
 
@@ -1137,8 +1179,7 @@ class App:
 
                 self.true_map[y_start:y_end, x_start:x_end] = img_small[:y_end - y_start, :x_end - x_start]
 
-                if self.view_mode == "Map View":
-                    self.root.after(0, self.display_map)
+                self.display_map()
 
         if image_queue is not None:
             image_queue.put(None)
@@ -1260,42 +1301,16 @@ class App:
 
     # ------------- Flake Detection -------------
 
-    '''
-    def run_10x_flake_detection(self, scan_path=None, chip_data=None):
-        chips_scanned = 0
-        while chips_scanned < len(chip_data):   
-            scanned_images = 0
-            chip_folder = scan_path / f"Chip {chips_scanned + 1} ({chip_data[chips_scanned][0]}, {chip_data[chips_scanned][1]})" / "All Images" / "10x"
-            while scanned_images < chip_data[chips_scanned][2]:
-                file_name = f"img_10x_R_{scanned_images+1}.png"
-                if not (chip_folder / file_name).exists():
-                    print(f"Waiting for image {file_name}...")
-                    time.sleep(0.1)
-                    continue
-               
-                img = cv2.imread(str(chip_folder / file_name))
-                scanned_img = flake_identifier.identify_flakes(img)
-
-                image_path = scan_path / "All Images" / "10x" / f"img_10x_S_{scanned_images}.png" # _S for "Scanned"
-                image_path.parent.mkdir(parents=True, exist_ok=True)
-                self.save_image(image=scanned_img, filename=image_path)
- 
-                scanned_images += 1
-                print(f"Scanned image {scanned_images}/{chip_data[chips_scanned][2]} for Chip {chips_scanned + 1}")
-            chips_scanned += 1
-            print(f"Chips scanned: {chips_scanned}/{len(chip_data)}")
-    '''
-
     def run_10x_flake_detection(self, image_queue=None):
         while True:
             img_path = image_queue.get()
             if img_path is None:
                 break
             img = cv2.imread(str(img_path))
-            scanned_img = flake_identifier.identify_flakes(img)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            scanned_img, _, save = fi.identify_flakes(img)
             out_path = img_path.with_name(img_path.name.replace("R", "S"))
-            img_path.parent.mkdir(parents=True, exist_ok=True)
-            self.save_image(scanned_img, out_path)
+            self.save_image(cv2.cvtColor(scanned_img, cv2.COLOR_RGB2BGR), save_dir=out_path.parent, filename=out_path.name)
             image_queue.task_done()
 
     # ------------- Display Functions -------------
@@ -1471,7 +1486,7 @@ class App:
                 else:
                     self.display_live_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     
-            self.find_sharpness(img)
+            self.find_sharpness(self.current_frame)
 
         except amcam.HRESULTException as ex:
             print("Camera error:", ex)
@@ -1522,6 +1537,7 @@ class App:
         max_speed = self.hcam.MaxSpeed()
         self.hcam.put_Speed(max_speed)
 
+    # image should be in BGR
     def save_image(self, image=None, save_dir=None, filename=None, output=False):
         if image is None:
             if not hasattr(self, "current_frame") or self.current_frame is None:
@@ -1586,6 +1602,19 @@ class App:
 
         return cropped_frame
     
+    def capture_frame_raw(self, num_images=2):
+        self.wait_until_new_frame()
+
+        sum_frame = np.zeros_like(self.current_frame, dtype=np.float32)
+
+        for _ in range(num_images):
+            self.wait_until_new_frame()
+            sum_frame += self.current_frame.astype(np.float32)
+
+        avg_frame = (sum_frame / num_images).astype(self.current_frame.dtype)
+
+        return avg_frame
+
     def on_close(self):
         self.hcam = None
         self.buf = None

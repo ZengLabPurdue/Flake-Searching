@@ -25,7 +25,7 @@ sys.path.insert(0, str(brody_work_path))
 
 import single_frame_pipeline
 
-class flake_identifier():
+class Flake_Identifier():
     def __init__(self):
         try:
             self.model = load_model(model_path)
@@ -33,17 +33,32 @@ class flake_identifier():
             self.model = None
             print(f"Error loading model: {e}")
 
-    def identify_flakes(self, image):
+        print("Flake identifier initialized!")
+
+    # image should be in RGB
+    def identify_flakes(self, image, output=False):
         start_time = time.time()
         masked_image, contours = single_frame_pipeline.process_frame(image)
 
-        scanned_image = image_rgb.copy()
-        cv2.drawContours(scanned_image, contours, -1, color=(255, 255, 255), thickness=2)
+        valid_contours = []
+        for c in contours:
+            if isinstance(c, np.ndarray):
+                try:
+                    c_fixed = np.array(c, dtype=np.int32).reshape(-1,1,2)
+                    valid_contours.append(c_fixed)
+                except:
+                    print("Skipping invalid contour")
+            else:
+                print("Skipping non-ndarray contour")
+
+        scanned_image = image.copy()
+        cv2.drawContours(scanned_image, valid_contours, -1, color=(255, 255, 255), thickness=2)
+        save = False
 
         bounding_rectangles = []
         flakes = []
 
-        for c in contours:
+        for c in valid_contours:
             x, y, w, h = cv2.boundingRect(c)
             cx, cy = x + w / 2, y + h / 2
             scale = 1.2
@@ -65,10 +80,10 @@ class flake_identifier():
 
             bounding_rectangles.append((new_x, new_y, int(new_w), int(new_h)))
 
-            contour_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
+            contour_mask = np.zeros(image.shape[:2], dtype=np.uint8)
             cv2.drawContours(contour_mask, [c], -1, color=255, thickness=-1)
             contour_mask_crop = contour_mask[new_y:new_y2, new_x:new_x2]
-            image_crop = image_rgb[new_y:new_y2, new_x:new_x2]
+            image_crop = image[new_y:new_y2, new_x:new_x2]
             comp_r = int(cv2.mean(image_crop[:, :, 0], mask=contour_mask_crop)[0])
             comp_g = int(cv2.mean(image_crop[:, :, 1], mask=contour_mask_crop)[0])
             comp_b = int(cv2.mean(image_crop[:, :, 2], mask=contour_mask_crop)[0])
@@ -97,6 +112,9 @@ class flake_identifier():
                 4: (255, 255, 0),    # Thick flake - yellow
             }
 
+            if class_to_color == 2:
+                save = True
+
             rect_color = class_to_color.get(predicted_class, (255, 255, 255))
             cv2.rectangle(scanned_image, (new_x, new_y), (new_x2, new_y2), color=rect_color, thickness=2)
             cv2.rectangle(masked_image, (new_x, new_y), (new_x2, new_y2), color=rect_color, thickness=2)
@@ -109,21 +127,21 @@ class flake_identifier():
         plt.show()
         '''
 
-        print(f"Time taken: {time.time() - start_time:.2f}s")        
-        plt.figure(figsize=(10, 8))
-        plt.imshow(scanned_image)
-        plt.title("Image with Contours and Flake Colors")
-        plt.axis("off")
-        plt.show()
-
-        return scanned_image, flakes
-
+        if output:
+            print(f"Time taken: {time.time() - start_time:.2f}s")        
+            plt.figure(figsize=(10, 8))
+            plt.imshow(scanned_image)
+            plt.title("Image with Contours and Flake Colors")
+            plt.axis("off")
+            plt.show()
+        
+        return scanned_image, flakes, save
 
 '''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
 image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
 image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
-flake_id = flake_identifier()
-flake_id.identify_flakes(image_rgb)
+flake_id = Flake_Identifier()
+flake_id.identify_flakes(image_rgb, output=True)
 '''
