@@ -184,6 +184,9 @@ class Prior_Controller():
     def set_origin(self):
         self.cmd("controller.stage.position.set 0 0")
 
+    def set_z_0(self):
+        self.cmd("controller.z.position.set 0")
+
     def start_forward_x_motor(self):
         self.cmd(f"controller.stage.move-at-velocity {self.velocity} 0")
     def start_backward_x_motor(self):

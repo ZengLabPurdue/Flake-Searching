@@ -85,7 +85,9 @@ class App:
         self.scan_running = False
 
         self.step_size = 1000
-        self.hold_speed = 2600
+        self.xy_speed = 2600
+        self.z_step_size = 500
+        self.z_speed = 1000
         self.hold_job = None
         self.is_hold = False
 
@@ -107,7 +109,7 @@ class App:
 
         self.panels.append({
             "name": "Stage Control Panel",
-            "frame": self.init_manual_control_panel(),
+            "frame": self.init_stage_control_panel(),
             "var": BooleanVar(value=False)
         })
 
@@ -240,13 +242,13 @@ class App:
 
         return self.info_panel
 
-    def init_manual_control_panel(self):
+    def init_stage_control_panel(self):
 
         self.manual_control_panel = Frame(
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=444
+            height=574
         )
         self.manual_control_panel.place(relx=1.0, rely=0.0, anchor="ne")
 
@@ -254,7 +256,7 @@ class App:
             self.manual_control_panel,
             bg="white",
             width=200,
-            height=442
+            height=572
         )
         self.manual_control_background.place(x=2, y=0)
 
@@ -270,42 +272,44 @@ class App:
         label_x = 10
         entry_x = 130
 
-        step_label = Label(
+        # ------------- XY Control -------------
+
+        xy_step_label = Label(
             self.manual_control_panel,
-            text="Step Size (µm):",
+            text="XY Step Size (µm):",
             bg="white",
             fg="black",
             width=15,
             anchor="e"
         )
-        step_label.place(relx=0.0, rely=0.0, x=label_x, y=45)
+        xy_step_label.place(relx=0.0, rely=0.0, x=label_x, y=45)
 
-        self.step_size_var = StringVar(value=str(self.step_size))
-        self.step_entry = ttk.Entry(
+        self.xy_step_size_var = StringVar(value=str(self.step_size))
+        self.xy_step_entry = ttk.Entry(
             self.manual_control_panel,
-            textvariable=self.step_size_var,
+            textvariable=self.xy_step_size_var,
             width=8
         )
-        self.step_entry.place(relx=0.0, rely=0.0, x=entry_x, y=45)
+        self.xy_step_entry.place(relx=0.0, rely=0.0, x=entry_x, y=45)
 
-        hold_speed_label = Label(
+        xy_hold_speed_label = Label(
             self.manual_control_panel,
-            text="Hold Speed (µm/s):",
+            text="XY Speed (µm/s):",
             bg="white",
             fg="black",
             width=15,
             anchor="e"
         )
-        hold_speed_label.place(relx=0.0, rely=0.0, x=label_x, y=75)
+        xy_hold_speed_label.place(relx=0.0, rely=0.0, x=label_x, y=75)
 
-        self.hold_speed_var = StringVar(value=str(self.hold_speed))
-        self.hold_speed_var.trace_add("write", self.on_hold_speed_change)
-        self.hold_speed_entry = ttk.Entry(
+        self.xy_hold_speed_var = StringVar(value=str(self.xy_speed))
+        self.xy_hold_speed_var.trace_add("write", self.on_speed_change_xy)
+        self.xy_hold_speed_entry = ttk.Entry(
             self.manual_control_panel,
-            textvariable=self.hold_speed_var,
+            textvariable=self.xy_hold_speed_var,
             width=8
         )
-        self.hold_speed_entry.place(relx=0.0, rely=0.0, x=entry_x, y=75)
+        self.xy_hold_speed_entry.place(relx=0.0, rely=0.0, x=entry_x, y=75)
 
         x_label = Label(
             self.manual_control_panel,
@@ -358,7 +362,7 @@ class App:
 
         self.move_to_button = ttk.Button(
             self.manual_control_panel,
-            text="Move to (x,y)",
+            text="Move to (X, Y)",
             style="Normal.TButton",
             command=self.go_to_position
         )
@@ -419,6 +423,45 @@ class App:
         self.btn_right.grid(row=1, column=2, sticky="nsew")
         self.btn_backward.grid(row=1, column=1, sticky="nsew")
 
+        # ------------- Z Control -------------
+
+        z_step_label = Label(
+            self.manual_control_panel,
+            text="Z Step Size (µm):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        z_step_label.place(relx=0.0, rely=0.0, x=label_x, y=345)
+
+        self.z_step_size_var = StringVar(value=str(self.z_step_size))
+        self.z_step_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.z_step_size_var,
+            width=8
+        )
+        self.z_step_entry.place(relx=0.0, rely=0.0, x=entry_x, y=345)
+
+        z_hold_speed_label = Label(
+            self.manual_control_panel,
+            text="Z Speed (µm/s):",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        z_hold_speed_label.place(relx=0.0, rely=0.0, x=label_x, y=375)
+
+        self.z_hold_speed_var = StringVar(value=str(self.z_speed))
+        self.z_hold_speed_var.trace_add("write", self.on_speed_change_z)
+        self.z_hold_speed_entry = ttk.Entry(
+            self.manual_control_panel,
+            textvariable=self.z_hold_speed_var,
+            width=8
+        )
+        self.z_hold_speed_entry.place(relx=0.0, rely=0.0, x=entry_x, y=375)
+
         z_label = Label(
             self.manual_control_panel,
             text="Z (µm):",
@@ -427,7 +470,7 @@ class App:
             width=15,
             anchor="e"
         )
-        z_label.place(relx=0.0, rely=0.0, x=label_x, y=345)
+        z_label.place(relx=0.0, rely=0.0, x=label_x, y=405)
 
         self.z_coord_var = StringVar(value=str(z_pos))
         self.z_coord_entry = ttk.Entry(
@@ -435,7 +478,23 @@ class App:
             textvariable=self.z_coord_var,
             width=8
         )
-        self.z_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=345)
+        self.z_coord_entry.place(relx=0.0, rely=0.0, x=entry_x, y=405)
+
+        self.z_reset_button = ttk.Button(
+            self.manual_control_panel,
+            text="Set Z = 0",
+            style="Normal.TButton",
+            command=self.set_z_0
+        )
+        self.z_reset_button.place(relx=0.5, y=440, anchor="n")
+
+        self.z_move_to_button = ttk.Button(
+            self.manual_control_panel,
+            text="Move to Z",
+            style="Normal.TButton",
+            command=self.go_to_z_position
+        )
+        self.z_move_to_button.place(relx=0.5, y=475, anchor="n")
 
         self.Z_manual_control_button_panel = Frame(
             self.manual_control_panel,
@@ -443,7 +502,7 @@ class App:
             width=80, 
             height=45 
         )
-        self.Z_manual_control_button_panel.place(relx=0.5, x=0, y=380, anchor="n")
+        self.Z_manual_control_button_panel.place(relx=0.5, x=0, y=510, anchor="n")
         self.Z_manual_control_button_panel.pack_propagate(False)
 
         z_controls = Frame(self.Z_manual_control_button_panel, bg="white")
@@ -724,6 +783,8 @@ class App:
       
     # ------------- Stage/Objective Control Functions -------------
 
+    # XY Control Functions
+
     def set_origin(self):
         pc.set_origin()
         self.get_position()
@@ -733,11 +794,8 @@ class App:
         self.get_position()
 
     def get_position(self):
-        global x_pos, y_pos
-        pc.get_curr_pos()
-        x_pos = pc.x
-        y_pos = pc.y
-        z_pos = pc.z
+        global x_pos, y_pos, z_pos
+        x_pos, y_pos, z_pos = pc.get_curr_pos()
         self.x_coord_var.set(str(x_pos))
         self.y_coord_var.set(str(y_pos))
         self.z_coord_var.set(str(z_pos))
@@ -830,6 +888,24 @@ class App:
 
         self.get_position()
 
+    def on_speed_change_xy(self, *args):
+        try:
+            speed = int(self.xy_speed_var.get())
+            pc.set_velocity(speed)
+        except ValueError:
+            pass
+
+    # Z Control Functions
+
+    def set_z_0(self):
+        pc.set_z_0()
+        self.get_position()
+
+    def go_to_z_position(self):
+        global z_pos
+        pc.go_to_z_pos(int(self.z_coord_var.get()))
+        self.get_position()
+
     def start_hold_up(self):
         self.is_hold = True
         pc.start_backward_z_motor()
@@ -847,7 +923,7 @@ class App:
             pc.stop_z_motor()
         else:
             global z_pos
-            z_pos -= int(self.step_entry.get())
+            z_pos -= int(self.z_step_entry.get())
             pc.go_to_z_pos(z_pos)
 
         self.get_position()
@@ -869,15 +945,15 @@ class App:
             pc.stop_z_motor()
         else:
             global z_pos
-            z_pos += int(self.step_entry.get())
+            z_pos += int(self.z_step_entry.get())
             pc.go_to_z_pos(z_pos)
 
         self.get_position()
 
-    def on_hold_speed_change(self, *args):
+    def on_speed_change_z(self, *args):
         try:
-            speed = int(self.hold_speed_var.get())
-            pc.set_velocity(speed)
+            speed = int(self.z_speed_var.get())
+            pc.set_z_velocity(speed)
         except ValueError:
             pass
 
