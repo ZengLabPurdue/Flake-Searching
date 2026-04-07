@@ -87,7 +87,7 @@ class App:
         self.step_size = 1000
         self.xy_speed = 2600
         self.z_step_size = 500
-        self.z_speed = 1000
+        self.z_speed = 500
         self.hold_job = None
         self.is_hold = False
 
@@ -98,6 +98,10 @@ class App:
         self.height = 0
         
         self.magnification = "2x"
+
+        self.auto_focus_range = 1000
+        self.auto_focus_accuracy = 10
+        self.auto_focus_steps = 20
 
         self.panels = []
 
@@ -713,7 +717,7 @@ class App:
             self.main_frame,
             bg="#f0f0f0",
             width=204,
-            height=120
+            height=205
         )
         self.focus_panel.place(relx=1.0, rely=0.0, anchor="ne", y=442)
 
@@ -721,7 +725,7 @@ class App:
             self.focus_panel,
             bg="white",
             width=200,
-            height=118
+            height=203
         )
         self.focus_background.place(x=2, y=0)
 
@@ -745,39 +749,67 @@ class App:
             font="TkDefaultFont"
         )
 
-        self.sharpness_label.place(relx=0.5, y=40, anchor="n")
+        self.sharpness_label.place(relx=0.5, y=35, anchor="n")
 
-        self.auto_focus_btn = ttk.Button(self.focus_panel, text="Auto Focus", style="Normal.TButton", command=self.auto_focus)
-        self.auto_focus_btn.place(relx=0.5, y=75, anchor="n")
+        label_x = 10
+        entry_x = 130
 
-        '''
-        self.focus_button_panel = Frame(
-            self.manual_control_panel,
+        range_label = Label(
+            self.focus_panel,
+            text="Range:",
             bg="white",
-            width=80, 
-            height=45 
+            fg="black",
+            width=15,
+            anchor="e"
         )
-        self.focus_button_panel.place(relx=0.5, x=0, y=380, anchor="n")
-        self.focus_button_panel.pack_propagate(False)
+        range_label.place(relx=0.0, rely=0.0, x=label_x, y=65)
 
-        focus_controls = Frame(self.Z_manual_control_button_panel, bg="white")
-        focus_controls.pack(expand=True, fill="both")
+        self.auto_focus_range_var = StringVar(value=str(self.auto_focus_range))
+        self.auto_focus_range_entry = ttk.Entry(
+            self.focus_panel,
+            textvariable=self.auto_focus_range_var,
+            width=8
+        )
+        self.auto_focus_range_entry.place(relx=0.0, rely=0.0, x=entry_x, y=65)
 
-        self.btn_find_focus = ttk.Button(focus_controls, text="▴", style="Arrow.TButton")
-        self.btn_down = ttk.Button(focus_controls, text="▾", style="Arrow.TButton")
+        accuracy_label = Label(
+            self.focus_panel,
+            text="Accuracy:",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        accuracy_label.place(relx=0.0, rely=0.0, x=label_x, y=95)
 
-        self.btn_up.bind("<ButtonPress-1>", self.on_press_up)
-        self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
-        self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
-        self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+        self.auto_focus_accuracy_var = StringVar(value=str(self.auto_focus_accuracy))
+        self.auto_focus_accuracy_entry = ttk.Entry(
+            self.focus_panel,
+            textvariable=self.auto_focus_accuracy_var,
+            width=8
+        )
+        self.auto_focus_accuracy_entry.place(relx=0.0, rely=0.0, x=entry_x, y=95)
 
-        focus_controls.rowconfigure(0, weight=1)
-        focus_controls.columnconfigure(0, weight=1)
-        focus_controls.columnconfigure(1, weight=1)
+        step_label = Label(
+            self.focus_panel,
+            text="Num Steps:",
+            bg="white",
+            fg="black",
+            width=15,
+            anchor="e"
+        )
+        step_label.place(relx=0.0, rely=0.0, x=label_x, y=125)
 
-        self.btn_up.grid(row=0, column=0, sticky="nsew")
-        self.btn_down.grid(row=0, column=1, sticky="nsew")
-        '''
+        self.auto_focus_steps_var = StringVar(value=str(self.auto_focus_steps))
+        self.auto_focus_steps_entry = ttk.Entry(
+            self.focus_panel,
+            textvariable=self.auto_focus_steps_var,
+            width=8
+        )
+        self.auto_focus_steps_entry.place(relx=0.0, rely=0.0, x=entry_x, y=125)
+
+        self.auto_focus_btn = ttk.Button(self.focus_panel, text="Auto Focus", style="Normal.TButton", command=lambda: self.auto_focus(start_range=int(self.auto_focus_range_var.get()), accuracy=int(self.auto_focus_accuracy_var.get()), steps=int(self.auto_focus_steps_var.get())))
+        self.auto_focus_btn.place(relx=0.5, y=160, anchor="n")
 
         return self.focus_panel
       
@@ -1027,7 +1059,7 @@ class App:
             for i in range(steps+1)
         ]
 
-        print(f"Speed: {pc.get_z_velocity()}, Step: {int((z_end - z_start) / steps)}")
+        #print(f"Speed: {pc.get_z_velocity()}, Step: {int((z_end - z_start) / steps)}")
         #pc.set_velocity(int((z_end - z_start) / steps))
         
         curr_z = pc.get_curr_z_pos()
@@ -1044,7 +1076,7 @@ class App:
 
             sharpness = self.get_raw_sharpness(num_images=3)
 
-            print(f"Z: {z:>12.1f} | Sharpness: {sharpness:>8.3f} | Best Sharpness: {best_sharpness:>8.3f} | Best Z: {best_z:>12.1f}")
+            #print(f"Z: {z:>12.1f} | Sharpness: {sharpness:>8.3f} | Best Sharpness: {best_sharpness:>8.3f} | Best Z: {best_z:>12.1f}")
 
             if sharpness > best_sharpness:
                 best_sharpness = sharpness
@@ -1054,8 +1086,8 @@ class App:
                 if sharpness < best_sharpness - tolerance:
                     drops += 1
 
-            if drops >= 4:
-                print("Focus peak passed")
+            if drops >= 3:
+                #print("Focus peak passed")
                 break
 
         pc.go_to_z_pos(best_z)
@@ -1069,9 +1101,9 @@ class App:
         while _range >= accuracy:
             best_z = self.find_best_focus(best_z-_range, best_z+_range, steps)
             pc.go_to_z_pos(best_z)
-            self.discard_initial_frame(best_z)
-            print(f"Best Z: {best_z:>12.1f} | Sharpness: {self.get_raw_sharpness(num_images=3):>8.3f} | Range: {_range}")
-            print("-----------------------------------")
+            #self.discard_initial_frame(best_z)
+            #print(f"Best Z: {best_z:>12.1f} | Sharpness: {self.get_raw_sharpness(num_images=3):>8.3f} | Range: {_range}")
+            #print("-----------------------------------")
             _range = int(_range / (steps / 2))
         print(f"Time taken: {time.time() - start_time:.2f}s")
 
