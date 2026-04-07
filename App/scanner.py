@@ -103,6 +103,7 @@ class App:
         self.auto_focus_accuracy = 10
         self.auto_focus_steps = 20
 
+        self.buttons = []
         self.panels = []
 
         self.panels.append({
@@ -363,6 +364,7 @@ class App:
             command=self.set_origin
         )
         self.reset_button.place(relx=0.5, y=170, anchor="n")
+        self.buttons.append(self.reset_button)
 
         self.move_to_button = ttk.Button(
             self.manual_control_panel,
@@ -371,6 +373,7 @@ class App:
             command=self.go_to_position
         )
         self.move_to_button.place(relx=0.5, y=205, anchor="n")
+        self.buttons.append(self.move_to_button)
 
         self.XY_manual_control_button_panel = Frame(
             self.manual_control_panel,
@@ -393,6 +396,8 @@ class App:
         self.btn_backward = ttk.Button(controls, text="▾", style="Arrow.TButton")
         self.btn_left = ttk.Button(controls, text="◂", style="Arrow.TButton")
         self.btn_right = ttk.Button(controls, text="▸", style="Arrow.TButton")
+
+        self.buttons.extend([self.btn_forward, self.btn_backward, self.btn_left, self.btn_right])
 
         self.btn_forward.bind("<ButtonPress-1>", self.on_press_forward)
         self.btn_forward.bind("<ButtonRelease-1>", self.on_release_forward)
@@ -491,6 +496,7 @@ class App:
             command=self.set_z_0
         )
         self.z_reset_button.place(relx=0.5, y=440, anchor="n")
+        self.buttons.append(self.z_reset_button)
 
         self.z_move_to_button = ttk.Button(
             self.manual_control_panel,
@@ -499,6 +505,7 @@ class App:
             command=self.go_to_z_position
         )
         self.z_move_to_button.place(relx=0.5, y=475, anchor="n")
+        self.buttons.append(self.z_move_to_button)
 
         self.Z_manual_control_button_panel = Frame(
             self.manual_control_panel,
@@ -519,6 +526,8 @@ class App:
         self.btn_up.bind("<ButtonRelease-1>", self.on_release_up)
         self.btn_down.bind("<ButtonPress-1>", self.on_press_down)
         self.btn_down.bind("<ButtonRelease-1>", self.on_release_down)
+
+        self.buttons.extend([self.btn_up, self.btn_down])
 
         z_controls.rowconfigure(0, weight=1)
         z_controls.columnconfigure(0, weight=1)
@@ -567,6 +576,7 @@ class App:
             command=self.save_image
         )
         self.capture_button.place(relx=0.5, y=50, anchor="center")
+        self.buttons.append(self.capture_button)
 
         return self.capture_panel
 
@@ -810,6 +820,7 @@ class App:
 
         self.auto_focus_btn = ttk.Button(self.focus_panel, text="Auto Focus", style="Normal.TButton", command=lambda: self.auto_focus(start_range=int(self.auto_focus_range_var.get()), accuracy=int(self.auto_focus_accuracy_var.get()), steps=int(self.auto_focus_steps_var.get())))
         self.auto_focus_btn.place(relx=0.5, y=160, anchor="n")
+        self.buttons.append(self.auto_focus_btn)
 
         return self.focus_panel
       
@@ -822,8 +833,10 @@ class App:
         self.get_position()
 
     def go_to_position(self):
+        self.disable_buttons()
         pc.go_to_pos(int(self.x_coord_var.get()), int(self.y_coord_var.get()))
         self.get_position()
+        self.enable_buttons()
 
     def get_position(self):
         global x_pos, y_pos, z_pos
@@ -934,9 +947,11 @@ class App:
         self.get_position()
 
     def go_to_z_position(self):
+        self.disable_buttons()
         global z_pos
         pc.go_to_z_pos(int(self.z_coord_var.get()))
         self.get_position()
+        self.enable_buttons()
 
     def start_hold_up(self):
         self.is_hold = True
@@ -1095,7 +1110,8 @@ class App:
         return best_z
 
     def auto_focus(self, start_range=3000, accuracy=50, steps=20):
-        start_time = time.time()
+        #start_time = time.time()
+        self.disable_buttons()
         _range = start_range
         best_z = pc.get_curr_z_pos()
         while _range >= accuracy:
@@ -1105,7 +1121,8 @@ class App:
             #print(f"Best Z: {best_z:>12.1f} | Sharpness: {self.get_raw_sharpness(num_images=3):>8.3f} | Range: {_range}")
             #print("-----------------------------------")
             _range = int(_range / (steps / 2))
-        print(f"Time taken: {time.time() - start_time:.2f}s")
+        #print(f"Time taken: {time.time() - start_time:.2f}s")
+        self.enable_buttons()
 
     def stop_all_motors(self):
         pc.stop_all_motors()
@@ -1566,7 +1583,17 @@ class App:
 
                 y_position += frame.winfo_height()
 
-        # ------------- Camera Handling -------------
+    def enable_buttons(self):
+        for btn in self.buttons:
+            btn.state(["!disabled"])
+        self.root.update_idletasks()
+
+    def disable_buttons(self):
+        for btn in self.buttons:
+            btn.state(["disabled"])
+        self.root.update_idletasks()
+
+    # ------------- Camera Handling -------------
 
     @staticmethod
     def cameraCallback(nEvent, ctx):
