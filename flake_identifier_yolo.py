@@ -1,11 +1,23 @@
 """
 Flake identification using YOLO instance segmentation (labeled_seg_best.pt).
 
-Same public shape as flake_identifier.Flake_Identifier: RGB image in,
-returns (scanned_image_rgb, flakes, save). Flakes are lists of
-(contour, (x, y, w, h), component_rgb, background_rgb).
+RGB image in → returns ``(scanned_image_rgb, flakes, save)``.
 
-Classes match training: yellow, green, good, blue (see train_labeled_segmentor.py).
+Each flake entry is a 6-tuple:
+  ``(contour, (x, y, w, h), component_rgb, background_rgb, class_name, confidence)``
+
+**Overlay colors** (contour + box + label; after BGR→RGB they look like):
+
+  ========= ======================================================
+  Class     Color on the image (approximate)
+  ========= ======================================================
+  yellow    golden / amber outline and label
+  green     green
+  good      orange (training class 'good' flake)
+  blue      blue–magenta / reddish-blue tint on outline
+  ========= ======================================================
+
+Classes match ``train_labeled_segmentor.py``: yellow, green, good, blue (YOLO class ids 0–3).
 
 CLI:  python flake_identifier_yolo.py path/to/image.jpg
       python flake_identifier_yolo.py   # pick file in a dialog
@@ -32,6 +44,54 @@ CLASS_COLORS_BGR = {
 }
 CONF_THRESH = 0.25
 BBoxPad = 1.2
+
+
+def _draw_label_bgr(
+    img_bgr, cx: int, cy: int, text: str, color_bgr: tuple[int, int, int]
+):
+    """Draw ``text`` in ``color_bgr`` just above (cx, cy), with a dark backdrop."""
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+    pad = 3
+    x0, y0 = cx, cy - th - pad * 2
+    x1, y1 = cx + tw + pad * 2, cy + pad
+    h, w = img_bgr.shape[:2]
+    if x1 > w:
+        x0 = max(0, w - (x1 - x0))
+        x1 = x0 + tw + pad * 2
+    if y0 < 0:
+        y1 -= y0
+        y0 = 0
+    if y1 > h:
+        y0 = max(0, h - (y1 - y0))
+        y1 = h
+    cv2.rectangle(img_bgr, (x0, y0), (x1, y1), (15, 15, 15), -1)
+    cv2.putText(
+        img_bgr, text, (x0 + pad, y1 - pad),
+        font, scale, color_bgr, thick, cv2.LINE_AA,
+    )
+
+
+def _draw_legend_bgr(img_bgr, counts: dict[str, int]):
+    lx, ly = 12, 20
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1
+    header = "Class (count) = outline color"
+    (tw, th), _ = cv2.getTextSize(header, font, scale, thick)
+    cv2.rectangle(img_bgr, (lx - 3, ly - th - 3), (lx + tw + 6, ly + 5), (15, 15, 15), -1)
+    cv2.putText(
+        img_bgr, header, (lx, ly), font, scale, (210, 210, 210), thick, cv2.LINE_AA,
+    )
+    ly += th + 10
+    for name in CLASS_NAMES:
+        n = counts[name]
+        label = f"  {name}: {n}"
+        color_bgr = CLASS_COLORS_BGR[name]
+        (tw, th), _ = cv2.getTextSize(label, font, scale, thick)
+        cv2.rectangle(img_bgr, (lx - 3, ly - th - 3), (lx + tw + 6, ly + 5), (15, 15, 15), -1)
+        cv2.putText(
+            img_bgr, label, (lx, ly), font, scale, color_bgr, thick, cv2.LINE_AA,
+        )
+        ly += th + 10
 
 
 def load_image_rgb(path: str | Path) -> np.ndarray:
@@ -64,10 +124,14 @@ class Flake_Identifier:
         Returns
         -------
         scanned_image_rgb, flakes, save
+
+        Flakes include ``class_name`` (str) and ``confidence`` (float) per detection
+        after ``background_rgb``.
         """
         start_time = time.time()
         save = False
         flakes = []
+        class_counts = {n: 0 for n in CLASS_NAMES}
 
         if self.model is None or image is None or image.size == 0:
             return image.copy() if image is not None else np.array([]), flakes, save
@@ -101,6 +165,7 @@ class Flake_Identifier:
                 continue
             name = CLASS_NAMES[cls_id]
             color_bgr = CLASS_COLORS_BGR[name]
+            class_counts[name] += 1
 
             if cls_id == 2:
                 save = True
@@ -165,6 +230,8 @@ class Flake_Identifier:
                     (new_x, new_y, int(new_w), int(new_h)),
                     (comp_r, comp_g, comp_b),
                     (back_r, back_g, back_b),
+                    name,
+                    conf,
                 )
             )
 
@@ -177,13 +244,23 @@ class Flake_Identifier:
                 thickness=2,
             )
 
+            M = cv2.moments(c_fixed)
+            if M["m00"] and M["m00"] > 1e-6:
+                tcx = int(M["m10"] / M["m00"])
+                tcy = int(M["m01"] / M["m00"])
+            else:
+                tcx, tcy = (new_x + new_x2) // 2, (new_y + new_y2) // 2
+            _draw_label_bgr(scanned_bgr, tcx, tcy, f"{name} {conf:.2f}", color_bgr)
+
+        _draw_legend_bgr(scanned_bgr, class_counts)
+
         scanned_rgb = cv2.cvtColor(scanned_bgr, cv2.COLOR_BGR2RGB)
 
         if output:
             print(f"Time taken: {time.time() - start_time:.2f}s")
             plt.figure(figsize=(10, 8))
             plt.imshow(scanned_rgb)
-            plt.title("YOLO-seg: contours and boxes by class")
+            plt.title("YOLO-seg: class + confidence (see legend)")
             plt.axis("off")
             plt.show()
 
@@ -239,6 +316,8 @@ if __name__ == "__main__":
         path, output=not args.no_show
     )
     print(f"{path}: {len(flakes)} flake(s), save={save}")
+    for _, _, _, _, fn, fc in flakes:
+        print(f"  {fn}  conf={fc:.3f}")
 
     if args.out:
         outp = Path(args.out)
