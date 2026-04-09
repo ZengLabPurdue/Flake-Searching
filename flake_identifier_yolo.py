@@ -6,8 +6,11 @@ returns (scanned_image_rgb, flakes, save). Flakes are lists of
 (contour, (x, y, w, h), component_rgb, background_rgb).
 
 Classes match training: yellow, green, good, blue (see train_labeled_segmentor.py).
+
+CLI:  python flake_identifier_yolo.py path/to/image.jpg
+      python flake_identifier_yolo.py   # pick file in a dialog
 """
-import os
+import argparse
 import time
 from pathlib import Path
 
@@ -29,6 +32,17 @@ CLASS_COLORS_BGR = {
 }
 CONF_THRESH = 0.25
 BBoxPad = 1.2
+
+
+def load_image_rgb(path: str | Path) -> np.ndarray:
+    """Load an image file as RGB uint8. Raises FileNotFoundError / ValueError if missing or empty."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"Image not found: {p}")
+    bgr = cv2.imread(str(p), cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError(f"Could not read image: {p}")
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
 class Flake_Identifier:
@@ -175,16 +189,60 @@ class Flake_Identifier:
 
         return scanned_rgb, flakes, save
 
+    def identify_flakes_from_path(
+        self,
+        image_path: str | Path,
+        *,
+        output: bool = False,
+    ):
+        """Load ``image_path`` (RGB) and run :meth:`identify_flakes`."""
+        rgb = load_image_rgb(image_path)
+        return self.identify_flakes(rgb, output=output)
+
 
 if __name__ == "__main__":
-    from tkinter import filedialog
-
-    path = filedialog.askopenfilename(
-        filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")]
+    parser = argparse.ArgumentParser(
+        description="Run YOLO flake segmentation on an image.",
     )
-    if not path:
-        raise SystemExit(0)
-    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    parser.add_argument(
+        "image",
+        nargs="?",
+        default=None,
+        help="Path to image (.png, .jpg, …). If omitted, a file picker opens.",
+    )
+    parser.add_argument(
+        "-o",
+        "--out",
+        metavar="PATH",
+        default=None,
+        help="Save overlay image (RGB) to this path (e.g. overlay.jpg).",
+    )
+    parser.add_argument(
+        "--no-show",
+        action="store_true",
+        help="Do not open the matplotlib window.",
+    )
+    args = parser.parse_args()
+
+    path = args.image
+    if path is None:
+        from tkinter import filedialog
+
+        path = filedialog.askopenfilename(
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff")]
+        )
+        if not path:
+            raise SystemExit(0)
+
     fid = Flake_Identifier()
-    fid.identify_flakes(rgb, output=True)
+    out_rgb, flakes, save = fid.identify_flakes_from_path(
+        path, output=not args.no_show
+    )
+    print(f"{path}: {len(flakes)} flake(s), save={save}")
+
+    if args.out:
+        outp = Path(args.out)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        ok = cv2.imwrite(str(outp), cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR))
+        if not ok:
+            raise SystemExit(f"Failed to write: {outp}")
