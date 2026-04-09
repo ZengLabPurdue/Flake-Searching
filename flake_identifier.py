@@ -18,12 +18,18 @@ import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 from tensorflow.keras.models import load_model
 
-home_dir = os.path.dirname(os.path.abspath(__file__))
-brody_work_path = Path(home_dir) / "Brody's Work"
-model_path = Path(home_dir) / "color_classifier_tf.keras"
-sys.path.insert(0, str(brody_work_path))
+from ultralytics import YOLO
+os.environ["YOLO_VERBOSE"] = "False"
 
-import single_frame_pipeline
+home_dir = os.path.dirname(os.path.abspath(__file__))
+#brody_work_path = Path(home_dir) / "Brody's Work"
+flake_reg_path = Path(home_dir) / "Flake Recognition"
+model_path = Path(home_dir) / "color_classifier_tf.keras"
+#sys.path.insert(0, str(brody_work_path))
+sys.path.insert(0, str(flake_reg_path))
+
+#import single_frame_pipeline
+import flake_finder
 
 class Flake_Identifier():
     def __init__(self):
@@ -38,7 +44,7 @@ class Flake_Identifier():
     # image should be in RGB
     def identify_flakes(self, image, output=False):
         start_time = time.time()
-        masked_image, contours = single_frame_pipeline.process_frame(image)
+        masked_image, contours = flake_finder.find_flakes(image, display=False)
 
         valid_contours = []
         for c in contours:
@@ -136,6 +142,13 @@ class Flake_Identifier():
             plt.show()
         
         return scanned_image, flakes, save
+    
+    def identify_flakes_seg_model(self, image):
+        
+        model = YOLO("labeled_seg_best.pt")
+        results = model(image)
+
+        return results
 
 '''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])
@@ -143,5 +156,8 @@ image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
 image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
 flake_id = Flake_Identifier()
+print(flake_id.identify_flakes_seg_model(image_rgb))
+
 flake_id.identify_flakes(image_rgb, output=True)
 '''
+

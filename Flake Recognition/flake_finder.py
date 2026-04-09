@@ -4,10 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tkinter import filedialog
 
-folder_path = filedialog.askdirectory(title="Select Image Folder")
-
-extensions = (".png", ".jpg", ".jpeg", ".bmp")
-
 def find_flakes(image_bgr, edge_threshold=10, area_threshold=500, display=False):
 
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -26,7 +22,7 @@ def find_flakes(image_bgr, edge_threshold=10, area_threshold=500, display=False)
     #magnitude[magnitude < threshold] = 0
     
     binary = np.where(magnitude >= edge_threshold, 255, 0).astype(np.uint8)
-    
+
     kernel = np.ones((3, 3), np.uint8)
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
     contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -56,11 +52,15 @@ def find_flakes(image_bgr, edge_threshold=10, area_threshold=500, display=False)
         for ax in axs.ravel():
             ax.axis('off')
         
-        plt.suptitle(filename)
+        #plt.suptitle(filename)
         plt.tight_layout()
         plt.show()
     
     return background_img, area_filtered_contours
+
+folder_path = filedialog.askdirectory(title="Select Image Folder")
+
+extensions = (".png", ".jpg", ".jpeg", ".bmp")
 
 for filename in os.listdir(folder_path):
     if filename.lower().endswith(extensions):
@@ -69,4 +69,3 @@ for filename in os.listdir(folder_path):
         image_bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
 
         find_flakes(image_bgr, display=True)
-
