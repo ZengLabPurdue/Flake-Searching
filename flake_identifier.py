@@ -143,12 +143,11 @@ class Flake_Identifier():
         
         return scanned_image, flakes, save
     
-    def identify_flakes_seg_model(self, image):
-        
-        model = YOLO("labeled_seg_best.pt")
-        results = model(image)
+    def find_flakes(self, image, output=False):
 
-        return results
+        _, contours = flake_finder.find_flakes(image, display=False)
+        
+        return contours
 
 '''
 image_path = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp")])

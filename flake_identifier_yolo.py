@@ -1,27 +1,3 @@
-"""
-Flake identification using YOLO instance segmentation (labeled_seg_best.pt).
-
-RGB image in → returns ``(scanned_image_rgb, flakes, save)``.
-
-Each flake entry is a 6-tuple:
-  ``(contour, (x, y, w, h), component_rgb, background_rgb, class_name, confidence)``
-
-**Overlay colors** (contour + box + label; after BGR→RGB they look like):
-
-  ========= ======================================================
-  Class     Color on the image (approximate)
-  ========= ======================================================
-  yellow    golden / amber outline and label
-  green     green
-  good      orange (training class 'good' flake)
-  blue      blue–magenta / reddish-blue tint on outline
-  ========= ======================================================
-
-Classes match ``train_labeled_segmentor.py``: yellow, green, good, blue (YOLO class ids 0–3).
-
-CLI:  python flake_identifier_yolo.py path/to/image.jpg
-      python flake_identifier_yolo.py   # pick file in a dialog
-"""
 import argparse
 import time
 from pathlib import Path
@@ -35,7 +11,6 @@ _HOME = Path(__file__).resolve().parent
 _DEFAULT_WEIGHTS = _HOME / "labeled_seg_best.pt"
 
 CLASS_NAMES = ["yellow", "green", "good", "blue"]
-# BGR for cv2 drawing; image is processed in BGR then converted back to RGB
 CLASS_COLORS_BGR = {
     "yellow": (0, 200, 255),
     "green": (0, 210, 80),
@@ -46,10 +21,7 @@ CONF_THRESH = 0.25
 BBoxPad = 1.2
 
 
-def _draw_label_bgr(
-    img_bgr, cx: int, cy: int, text: str, color_bgr: tuple[int, int, int]
-):
-    """Draw ``text`` in ``color_bgr`` just above (cx, cy), with a dark backdrop."""
+def _draw_label_bgr(img_bgr, cx: int, cy: int, text: str, color_bgr: tuple[int, int, int]):
     font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1
     (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
     pad = 3
@@ -95,7 +67,6 @@ def _draw_legend_bgr(img_bgr, counts: dict[str, int]):
 
 
 def load_image_rgb(path: str | Path) -> np.ndarray:
-    """Load an image file as RGB uint8. Raises FileNotFoundError / ValueError if missing or empty."""
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"Image not found: {p}")
@@ -116,18 +87,6 @@ class Flake_Identifier:
             print("Flake identifier (YOLO-seg) initialized!")
 
     def identify_flakes(self, image: np.ndarray, output: bool = False):
-        """
-        Parameters
-        ----------
-        image : ndarray (H, W, 3) RGB uint8
-
-        Returns
-        -------
-        scanned_image_rgb, flakes, save
-
-        Flakes include ``class_name`` (str) and ``confidence`` (float) per detection
-        after ``background_rgb``.
-        """
         start_time = time.time()
         save = False
         flakes = []
@@ -216,7 +175,6 @@ class Flake_Identifier:
                 v = int(cv2.mean(image_crop_bgr, mask=contour_mask_crop)[0])
                 comp_r = comp_g = comp_b = v
 
-            # Background: mean in crop outside mask; store as RGB to match flake_identifier API
             if np.any(back_px):
                 back_b = int(image_crop_bgr[:, :, 0][back_px].mean())
                 back_g = int(image_crop_bgr[:, :, 1][back_px].mean())
@@ -272,7 +230,6 @@ class Flake_Identifier:
         *,
         output: bool = False,
     ):
-        """Load ``image_path`` (RGB) and run :meth:`identify_flakes`."""
         rgb = load_image_rgb(image_path)
         return self.identify_flakes(rgb, output=output)
 
