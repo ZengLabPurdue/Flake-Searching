@@ -17,7 +17,9 @@ from Scanning.region_classifier import (  # noqa: E402
     LEGEND_TOP_LEFT,
     LEGEND_TOP_RIGHT,
     classify_contour_regions,
+    combined_class_regions,
     draw_class_legend,
+    draw_region_area_labels,
     load_profile_configuration,
     match_profile_class,
     match_profile_filter,
@@ -523,6 +525,27 @@ class ScanProfileOptionsTests(unittest.TestCase):
         ))
         self.assertFalse(np.array_equal(classified, without_legend))
 
+        with_areas, _, area_details = find_flakes(
+            image,
+            area_threshold=10,
+            return_details=True,
+            profile_configuration=profile.matching_configuration(),
+            color_seed=0,
+            draw_legend=False,
+            draw_region_areas=True,
+            pixel_size_um=0.5,
+        )
+        self.assertFalse(np.array_equal(
+            with_areas,
+            area_details["classified_image_without_legend"],
+        ))
+        self.assertGreater(area_details["region_results"][0]["area_um2"], 0)
+        self.assertEqual(len(area_details["combined_region_results"]), 1)
+        self.assertGreater(
+            area_details["combined_region_results"][0]["area_um2"],
+            0,
+        )
+
     def test_class_legend_supports_each_image_corner(self):
         image = np.zeros((200, 240, 3), dtype=np.uint8)
         classes = [{
@@ -549,6 +572,113 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             draw_class_legend(image, classes, position="center")
+
+    def test_matched_region_area_is_measured_and_drawn_in_class_color(self):
+        image = np.full((80, 120, 3), 255, dtype=np.uint8)
+        regions = [{
+            "matched_class": "Thin",
+            "matched_color_rgb": (40, 220, 80),
+            "bounding_box": {"x": 20, "y": 25, "width": 20, "height": 15},
+            "area_um2": 123.4,
+        }]
+
+        rendered = draw_region_area_labels(image, regions)
+
+        self.assertFalse(np.array_equal(rendered, image))
+        self.assertTrue(np.any(np.all(rendered == (40, 220, 80), axis=2)))
+        self.assertFalse(np.any(np.all(rendered == (0, 0, 0), axis=2)))
+
+    def test_overlapping_flood_fills_become_one_combined_class_region(self):
+        class_index_map = np.zeros((14, 18), dtype=np.int32)
+        class_index_map[1:7, 1:7] = 1
+        class_index_map[4:10, 4:11] = 1
+        class_index_map[11:13, 14:17] = 1
+        profile_classes = [{
+            "name": "Thin",
+            "group": "Graphene",
+            "identify": True,
+            "class_index": 0,
+            "display_color_rgb": (40, 220, 80),
+        }]
+
+        combined = combined_class_regions(
+            class_index_map,
+            profile_classes,
+            pixel_size_um=0.5,
+        )
+
+        self.assertEqual(len(combined), 2)
+        expected_pixel_counts = sorted([
+            int(np.count_nonzero(class_index_map[1:10, 1:11] == 1)),
+            6,
+        ])
+        self.assertEqual(
+            sorted(region["pixel_count"] for region in combined),
+            expected_pixel_counts,
+        )
+        for region in combined:
+            self.assertAlmostEqual(
+                region["area_um2"],
+                region["pixel_count"] * 0.25,
+            )
+            self.assertEqual(
+                int(np.count_nonzero(region["instance_mask"])),
+                region["pixel_count"],
+            )
+
+    def test_region_area_labels_move_apart_when_default_positions_overlap(self):
+        image = np.zeros((120, 240, 3), dtype=np.uint8)
+        first = {
+            "matched_class": "Thin",
+            "matched_color_rgb": (40, 220, 80),
+            "bounding_box": {"x": 40, "y": 50, "width": 20, "height": 15},
+            "area_um2": 123.4,
+        }
+        one_label = draw_region_area_labels(image, [first])
+        two_labels = draw_region_area_labels(image, [first, dict(first)])
+
+        self.assertFalse(np.array_equal(one_label, two_labels))
+
+    def test_region_area_uses_segmented_pixel_count_and_pixel_scale(self):
+        image = np.full((12, 12, 3), 100, dtype=np.uint8)
+        image[2:10, 2:10] = 120
+        contour = np.asarray(
+            [[[2, 2]], [[9, 2]], [[9, 9]], [[2, 9]]],
+            dtype=np.int32,
+        )
+        identify_class = {
+            "name": "Class",
+            "contrast_rgb": np.asarray((20, 20, 20), dtype=float),
+            "tolerance": 2,
+            "class_index": 0,
+            "group": "",
+            "identify": True,
+            "minimum_size_um": None,
+            "maximum_size_um": None,
+            "display_color_rgb": (255, 0, 0),
+        }
+        result = classify_contour_regions(
+            image,
+            np.zeros((12, 12), dtype=np.uint8),
+            [contour],
+            np.asarray([[-1, -1, -1, -1]], dtype=np.int32),
+            [contour],
+            [0],
+            {0: [0]},
+            [identify_class],
+            2,
+            pixel_size_um=0.5,
+        )
+        region = result["region_results"][0]
+
+        self.assertAlmostEqual(
+            region["area_um2"],
+            region["pixel_count"] * 0.25,
+        )
+        self.assertEqual(
+            int(np.count_nonzero(region["instance_mask"])),
+            region["pixel_count"],
+        )
 
 
 if __name__ == "__main__":

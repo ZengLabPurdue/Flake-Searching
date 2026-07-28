@@ -688,15 +688,21 @@ def _measure_contour_geometry(
     maximum_size_um,
 ):
     bounding_box = component["bounding_box"]
+    pixel_count = component["pixel_count"]
     size_um = (
         max(bounding_box["width"], bounding_box["height"]) * pixel_size_um
         if pixel_size_um is not None
         else None
     )
     return {
-        "pixel_count": component["pixel_count"],
+        "pixel_count": pixel_count,
         "bounding_box": bounding_box,
         "size_um": size_um,
+        "area_um2": (
+            pixel_count * pixel_size_um * pixel_size_um
+            if pixel_size_um is not None
+            else None
+        ),
         "inside_profile_size": _size_matches(
             size_um,
             minimum_size_um,
@@ -732,6 +738,11 @@ def _measure_region_geometry(
         "pixel_count": pixel_count,
         "bounding_box": bounding_box,
         "size_um": size_um,
+        "area_um2": (
+            pixel_count * pixel_size_um * pixel_size_um
+            if pixel_size_um is not None
+            else None
+        ),
         "inside_profile_size": _size_matches(
             size_um,
             minimum_size_um,
@@ -821,10 +832,27 @@ def _make_region_result(
     filter_match,
     match,
     flood_filled,
+    region_mask,
+    region_origin,
 ):
     average_color = color_measurement["average_color"]
     contrast = color_measurement["contrast"]
     size_um = geometry["size_um"]
+    area_um2 = geometry["area_um2"]
+    instance_mask = None
+    if matched_class is not None and region_mask is not None:
+        bounding_box = geometry["bounding_box"]
+        mask_width = int(bounding_box["width"])
+        mask_height = int(bounding_box["height"])
+        local_x = int(bounding_box["x"]) - int(region_origin[0])
+        local_y = int(bounding_box["y"]) - int(region_origin[1])
+        cropped_mask = region_mask[
+            local_y:local_y + mask_height,
+            local_x:local_x + mask_width,
+        ]
+        if cropped_mask.shape == (mask_height, mask_width):
+            instance_mask = np.where(cropped_mask, 255, 0).astype(np.uint8)
+
     return {
         "seed_point": component["global_seed"],
         "region_type": region_type,
@@ -849,6 +877,7 @@ def _make_region_result(
         "rejected_by_class": None,
         "rejected_by_group": None,
         "size_um": float(size_um) if size_um is not None else None,
+        "area_um2": float(area_um2) if area_um2 is not None else None,
         "inside_profile_size": geometry["inside_profile_size"],
         "matched_color_rgb": (
             matched_class["display_color_rgb"] if matched_class else None
@@ -868,6 +897,7 @@ def _make_region_result(
         ),
         "pixel_count": geometry["pixel_count"],
         "bounding_box": geometry["bounding_box"],
+        "instance_mask": instance_mask,
     }
 
 
@@ -1081,6 +1111,8 @@ def classify_contour_regions(
                 filter_match,
                 match,
                 flood_filled,
+                region_mask,
+                (x1, y1),
             ))
 
     class_index_map, class_overlap_count_map = _timed_call(
@@ -1124,6 +1156,62 @@ def create_classified_image(image_shape, external_mask, class_index_map, profile
             "display_color_rgb"
         ]
     return image
+
+
+def combined_class_regions(class_index_map, profile_classes, pixel_size_um=None):
+    """Return one result for each connected region in the final class map."""
+    combined_regions = []
+    for profile_class in profile_classes:
+        if not profile_class.get("identify", True):
+            continue
+        class_value = int(profile_class["class_index"]) + 1
+        class_mask = np.where(
+            class_index_map == class_value,
+            255,
+            0,
+        ).astype(np.uint8)
+        component_count, component_labels, stats, _centroids = (
+            cv2.connectedComponentsWithStats(
+                class_mask,
+                connectivity=8,
+            )
+        )
+        for component_label in range(1, component_count):
+            x = int(stats[component_label, cv2.CC_STAT_LEFT])
+            y = int(stats[component_label, cv2.CC_STAT_TOP])
+            width = int(stats[component_label, cv2.CC_STAT_WIDTH])
+            height = int(stats[component_label, cv2.CC_STAT_HEIGHT])
+            pixel_count = int(stats[component_label, cv2.CC_STAT_AREA])
+            instance_mask = np.where(
+                component_labels[y:y + height, x:x + width] == component_label,
+                255,
+                0,
+            ).astype(np.uint8)
+            combined_regions.append({
+                "region_type": "combined",
+                "matched_class": profile_class["name"],
+                "matched_group": profile_class.get("group") or None,
+                "matched_color_rgb": profile_class["display_color_rgb"],
+                "pixel_count": pixel_count,
+                "size_um": (
+                    max(width, height) * pixel_size_um
+                    if pixel_size_um is not None
+                    else None
+                ),
+                "area_um2": (
+                    pixel_count * pixel_size_um * pixel_size_um
+                    if pixel_size_um is not None
+                    else None
+                ),
+                "bounding_box": {
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                },
+                "instance_mask": instance_mask,
+            })
+    return combined_regions
 
 
 def _load_class_legend_font(font_size):
@@ -1236,6 +1324,135 @@ def draw_class_legend(
 
     for _, display_name, color, text_position, _ in label_layout:
         draw.text(text_position, display_name, font=font, fill=color)
+
+    return np.asarray(result).copy()
+
+
+def draw_region_area_labels(image_rgb, region_results):
+    """Draw each matched region's physical area beside its bounding box."""
+    result = Image.fromarray(image_rgb.copy())
+    draw = ImageDraw.Draw(result)
+    scale = max(1.0, min(image_rgb.shape[:2]) / 700.0)
+    font_size = max(13, int(round(16 * scale)))
+    font = _load_class_legend_font(font_size)
+    margin = max(3, int(round(4 * scale)))
+    image_height, image_width = image_rgb.shape[:2]
+    occupied = []
+    placements = []
+
+    def clamp_position(x, y, text_width, text_height):
+        return (
+            max(margin, min(int(round(x)), image_width - margin - text_width)),
+            max(margin, min(int(round(y)), image_height - margin - text_height)),
+        )
+
+    def overlaps(rectangle):
+        left, top, right, bottom = rectangle
+        return any(
+            not (
+                right + margin <= other_left
+                or other_right + margin <= left
+                or bottom + margin <= other_top
+                or other_bottom + margin <= top
+            )
+            for other_left, other_top, other_right, other_bottom in occupied
+        )
+
+    for region in region_results or ():
+        area_um2 = region.get("area_um2")
+        bounding_box = region.get("bounding_box")
+        color = region.get("matched_color_rgb")
+        if (
+            region.get("matched_class") is None
+            or area_um2 is None
+            or not bounding_box
+            or color is None
+        ):
+            continue
+
+        label = f"{area_um2:,.1f} \N{MICRO SIGN}m\N{SUPERSCRIPT TWO}"
+        color = tuple(int(channel) for channel in color)
+        bounds = draw.textbbox((0, 0), label, font=font)
+        text_width = bounds[2] - bounds[0]
+        text_height = bounds[3] - bounds[1]
+        region_right = int(round(bounding_box["x"] + bounding_box["width"]))
+        region_left = int(round(bounding_box["x"]))
+        region_top = int(round(bounding_box["y"]))
+        region_bottom = int(round(bounding_box["y"] + bounding_box["height"]))
+        center_x = (region_left + region_right) / 2
+        center_y = (region_top + region_bottom) / 2
+        candidates = [
+            (region_right + margin, region_top),
+            (region_left - margin - text_width, region_top),
+            (region_left, region_top - margin - text_height),
+            (region_left, region_bottom + margin),
+            (region_right + margin, region_bottom - text_height),
+            (region_left - margin - text_width, region_bottom - text_height),
+        ]
+        step = max(text_height + 2 * margin, 1)
+        maximum_radius = max(image_width, image_height)
+        for radius in range(step, maximum_radius + step, step):
+            candidates.extend([
+                (center_x + radius, center_y - text_height / 2),
+                (center_x - radius - text_width, center_y - text_height / 2),
+                (center_x - text_width / 2, center_y - radius - text_height),
+                (center_x - text_width / 2, center_y + radius),
+                (center_x + radius, center_y + radius),
+                (center_x - radius - text_width, center_y + radius),
+                (center_x + radius, center_y - radius - text_height),
+                (
+                    center_x - radius - text_width,
+                    center_y - radius - text_height,
+                ),
+            ])
+
+        selected = None
+        seen_positions = set()
+        for candidate_x, candidate_y in candidates:
+            text_x, text_y = clamp_position(
+                candidate_x,
+                candidate_y,
+                text_width,
+                text_height,
+            )
+            if (text_x, text_y) in seen_positions:
+                continue
+            seen_positions.add((text_x, text_y))
+            rectangle = (
+                text_x,
+                text_y,
+                text_x + text_width,
+                text_y + text_height,
+            )
+            if not overlaps(rectangle):
+                selected = (text_x, text_y, rectangle)
+                break
+        if selected is None:
+            text_x, text_y = clamp_position(
+                region_right + margin,
+                region_top,
+                text_width,
+                text_height,
+            )
+            selected = (
+                text_x,
+                text_y,
+                (text_x, text_y, text_x + text_width, text_y + text_height),
+            )
+
+        text_x, text_y, rectangle = selected
+        occupied.append(rectangle)
+        placements.append(
+            (label, color, (text_x, text_y), rectangle, bounding_box)
+        )
+
+    for label, color, (text_x, text_y), _, _ in placements:
+        draw.text(
+            (text_x, text_y),
+            label,
+            font=font,
+            fill=color,
+        )
 
     return np.asarray(result).copy()
 

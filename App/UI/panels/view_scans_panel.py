@@ -150,6 +150,15 @@ class ViewScansPanel:
             style="ScanResults.TCheckbutton",
         )
 
+        self.raw_result_var = tk.BooleanVar(value=False)
+        self.raw_result_checkbox = ttk.Checkbutton(
+            self.content,
+            text="Show raw image",
+            variable=self.raw_result_var,
+            command=self._toggle_raw_result,
+            style="ScanResults.TCheckbutton",
+        )
+
         self.button_panel = Frame(
             self.content,
             bg="white",
@@ -180,6 +189,7 @@ class ViewScansPanel:
         self._show_chip = True
         self._show_navigation = True
         self._show_filter_toggle = False
+        self._show_raw_result_toggle = False
         self._resize_job = None
         self.scan_name_var.trace_add("write", self._queue_panel_resize)
         self.image_var.trace_add("write", self._queue_panel_resize)
@@ -202,6 +212,7 @@ class ViewScansPanel:
             self.chip_dropdown,
             self.image_label,
             self.filtered_map_checkbox,
+            self.raw_result_checkbox,
             self.button_panel,
         )
         bottom = max(
@@ -221,6 +232,7 @@ class ViewScansPanel:
         show_chip=None,
         show_navigation=None,
         show_filter_toggle=None,
+        show_raw_result_toggle=None,
     ):
         if show_chip is not None:
             self._show_chip = bool(show_chip)
@@ -228,6 +240,8 @@ class ViewScansPanel:
             self._show_navigation = bool(show_navigation)
         if show_filter_toggle is not None:
             self._show_filter_toggle = bool(show_filter_toggle)
+        if show_raw_result_toggle is not None:
+            self._show_raw_result_toggle = bool(show_raw_result_toggle)
         if self._show_chip:
             self.chip_dropdown.grid()
         else:
@@ -243,10 +257,20 @@ class ViewScansPanel:
         else:
             self.filtered_map_checkbox.grid_remove()
 
+        if self._show_raw_result_toggle:
+            self.raw_result_checkbox.grid(
+                row=5,
+                column=0,
+                sticky="w",
+                pady=(0, 8),
+            )
+        else:
+            self.raw_result_checkbox.grid_remove()
+
         self.button_panel.grid_remove()
         if self._show_navigation:
             self.button_panel.grid(
-                row=5,
+                row=6,
                 column=0,
                 pady=(0, 2),
             )
@@ -490,6 +514,12 @@ class ViewScansPanel:
             preserve_context=True,
         )
 
+    def _toggle_raw_result(self):
+        if self.selected_view != "Flakes Found":
+            self.raw_result_var.set(False)
+            return
+        self.display_current_image()
+
     def open_scan(self):
         folder = filedialog.askdirectory(title="Select Scan Folder")
         if not folder:
@@ -512,7 +542,11 @@ class ViewScansPanel:
         self.selected_view = None
         self.chip_var.set("")
         self.filtered_map_var.set(False)
-        self._layout_controls(show_filter_toggle=False)
+        self.raw_result_var.set(False)
+        self._layout_controls(
+            show_filter_toggle=False,
+            show_raw_result_toggle=False,
+        )
         self.magnification_roots, self.available_result_views = (
             self._discover_result_layers()
         )
@@ -555,9 +589,12 @@ class ViewScansPanel:
         self.chip_root = None
         self.chip_source_folder = None
         self._configure_filtered_map_toggle(selected_view)
+        if selected_view != "Flakes Found":
+            self.raw_result_var.set(False)
         self._layout_controls(
             show_chip=False,
             show_navigation=False,
+            show_raw_result_toggle=False,
         )
 
         base_path = self.view_scan_path / "All Images"
@@ -724,6 +761,7 @@ class ViewScansPanel:
         self._layout_controls(
             show_chip=self.chip_root is not None,
             show_navigation=not self.sparse_map_mode,
+            show_raw_result_toggle=selected_view == "Flakes Found",
         )
         self.load_current_folder(view_state=view_state)
 
@@ -797,16 +835,46 @@ class ViewScansPanel:
         if not self.image_files:
             return
 
-        img_path = self.image_files[self.view_image_index]
+        result_path = self.image_files[self.view_image_index]
+        img_path = result_path
+        showing_raw = (
+            self.selected_view == "Flakes Found"
+            and self.raw_result_var.get()
+        )
+        if showing_raw:
+            raw_path = self._raw_result_path(result_path)
+            if raw_path is not None:
+                img_path = raw_path
 
-        self.image_var.set(f"Image: {img_path.name}")
+        title = (
+            f"Raw - {result_path.name}"
+            if showing_raw and img_path != result_path
+            else result_path.name
+        )
+        self.image_var.set(f"Image: {title}")
 
-        if not self.tile_viewer.load_image(img_path, title=img_path.name):
+        if not self.tile_viewer.load_image(img_path, title=title):
             messagebox.showwarning(
                 "Image Error",
                 f"Could not read image:\n{img_path}"
             )
             return
+
+    def _raw_result_path(self, result_path):
+        if self.view_scan_path is None:
+            return None
+        chip_name = result_path.parent.name
+        for magnification in ("10x", "20x"):
+            root = self._magnification_root(
+                magnification,
+                self.view_scan_path / "All Images",
+            )
+            chip_folder = self._named_child(root, chip_name)
+            raw_folder = self._named_child(chip_folder, "Raw")
+            candidate = raw_folder / result_path.name if raw_folder else None
+            if candidate is not None and candidate.is_file():
+                return candidate
+        return None
 
     def previous_image(self, event=None):
         if self.app.get_view() != "Scan Results":

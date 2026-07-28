@@ -379,6 +379,7 @@ def find_flakes(
     pixel_size_um=None,
     profile_configuration=None,
     legend_position=DEFAULT_LEGEND_POSITION,
+    draw_region_areas=False,
 ):
     """Detect flakes and return either class labels or the legacy masked image.
 
@@ -508,18 +509,37 @@ def find_flakes(
         classification["class_index_map"],
         profile_classes,
     )
+    combined_region_results = _timed_call(
+        stats,
+        "combine_class_regions",
+        region_classifier.combined_class_regions,
+        classification["class_index_map"],
+        profile_classes,
+        pixel_size_um,
+    )
+    annotated_image = (
+        _timed_call(
+            stats,
+            "draw_region_area_labels",
+            region_classifier.draw_region_area_labels,
+            classified_without_legend,
+            combined_region_results,
+        )
+        if draw_region_areas
+        else classified_without_legend
+    )
     classified_image = (
         _timed_call(
             stats,
             "draw_class_legend",
             region_classifier.draw_class_legend,
-            classified_without_legend,
+            annotated_image,
             profile_classes,
-            classification["region_results"],
+            combined_region_results,
             legend_position,
         )
         if draw_legend
-        else classified_without_legend
+        else annotated_image
     )
 
     contour_image = image_rgb.copy()
@@ -566,6 +586,7 @@ def find_flakes(
             "profile_minimum_size_um": profile_configuration["minimum_size_um"],
             "profile_maximum_size_um": profile_configuration["maximum_size_um"],
             "region_results": classification["region_results"],
+            "combined_region_results": combined_region_results,
             "class_colors_rgb": class_colors,
             "class_pixel_counts": {
                 item["name"]: int(np.count_nonzero(

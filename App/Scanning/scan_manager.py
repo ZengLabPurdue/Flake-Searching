@@ -15,6 +15,8 @@ from Imaging import image_metadata
 from . import chip_detection
 from . import flake_detection
 from . import coordinate_generator
+from . import region_dataset
+from .focus_plane import FocusPlane
 
 
 class ScanCancelled(RuntimeError):
@@ -23,6 +25,20 @@ class ScanCancelled(RuntimeError):
 
 class ScanManager:
     HUNDRED_X_GROUP_FIELD_RATIO = 0.75
+    SCAN_AUTOFOCUS_PROFILES = {
+        "10X": {
+            "focus_range": 200,
+            "z_velo": 50,
+            "z_accel": 10000,
+            "peak_found_threshold": 20,
+        },
+        "20X": {
+            "focus_range": 100,
+            "z_velo": 25,
+            "z_accel": 10000,
+            "peak_found_threshold": 20,
+        },
+    }
     DEFAULT_WINDOWS = {
         "2x Scan": (5, 5),
         "10x Scan": (10, 10),
@@ -335,7 +351,7 @@ class ScanManager:
             time.sleep(0.05)
         self._wait_for_stage()
 
-    def _move_stage_xy(self, x, y):
+    def _move_stage_xy(self, x, y, arm_capture=True):
         self._wait_for_stage()
         if not self.stage.move_to_xy(
             x,
@@ -348,8 +364,142 @@ class ScanManager:
             self.stage.last_confirmed_xy
             or (int(round(x)), int(round(y)))
         )
-        self.frame_processor.arm_capture_after_motion(expected_xy)
+        if arm_capture:
+            self.frame_processor.arm_capture_after_motion(expected_xy)
         return expected_xy
+
+    def _move_stage_z(self, z):
+        self._wait_for_stage()
+        if not self.stage.move_to_z(
+            float(z),
+            wait=True,
+            cancel_check=self._check_cancelled,
+        ):
+            raise RuntimeError("The stage could not start the requested Z move.")
+        return float(self.stage.get_z_position(strict=True))
+
+    def _scan_target_xy(
+        self,
+        center_x,
+        center_y,
+        offset_x,
+        offset_y,
+        magnification,
+    ):
+        magnification = str(magnification).upper()
+        step_x = (
+            PIXEL_SIZE[magnification][self.resolution]
+            * RESOLUTION_DIM[self.resolution]["x"]
+            * CROP_RATIO[magnification]["x"]
+        )
+        step_y = (
+            PIXEL_SIZE[magnification][self.resolution]
+            * RESOLUTION_DIM[self.resolution]["y"]
+            * CROP_RATIO[magnification]["y"]
+        )
+        return (
+            float(center_x) + float(offset_x) * step_x,
+            float(center_y) - float(offset_y) * step_y,
+        )
+
+    @staticmethod
+    def _focus_corner_offsets(scan_offsets):
+        """Choose three corners one grid location inside the scan boundary."""
+        if not scan_offsets:
+            raise ValueError("Cannot autofocus an empty scan area.")
+
+        x_locations = sorted({offset[0] for offset in scan_offsets})
+        y_locations = sorted({offset[1] for offset in scan_offsets})
+
+        def inset_extremes(locations):
+            # At least four locations are needed to move both sides inward
+            # while retaining two distinct coordinates for fitting the plane.
+            if len(locations) >= 4:
+                return locations[1], locations[-2]
+            return locations[0], locations[-1]
+
+        min_x, max_x = inset_extremes(x_locations)
+        min_y, max_y = inset_extremes(y_locations)
+        candidates = (
+            (max_x, max_y),
+            (max_x, min_y),
+            (min_x, min_y),
+        )
+
+        unique_corners = []
+        for corner in candidates:
+            if corner not in unique_corners:
+                unique_corners.append(corner)
+        return unique_corners
+
+    def _calibrate_scan_focus_plane(
+        self,
+        center_x,
+        center_y,
+        scan_offsets,
+        magnification,
+    ):
+        magnification = str(magnification).upper()
+        focus_controller = getattr(self.app, "focus_controller", None)
+        if focus_controller is None:
+            raise RuntimeError(
+                f"{magnification} scanning requires an autofocus controller."
+            )
+
+        profile = self.SCAN_AUTOFOCUS_PROFILES[magnification]
+        corner_offsets = self._focus_corner_offsets(scan_offsets)
+        stop_event = getattr(focus_controller, "stop_focus_event", None)
+        if stop_event is not None:
+            stop_event.clear()
+        self._check_cancelled()
+
+        focus_samples = []
+        for index, (offset_x, offset_y) in enumerate(
+            corner_offsets,
+            start=1,
+        ):
+            self._check_cancelled()
+            target_x, target_y = self._scan_target_xy(
+                center_x,
+                center_y,
+                offset_x,
+                offset_y,
+                magnification,
+            )
+            self.update_scan_status(
+                processing_state=(
+                    f"Autofocusing {magnification} interior point "
+                    f"{index}/{len(corner_offsets)}"
+                )
+            )
+            self._move_stage_xy(target_x, target_y, arm_capture=False)
+            best_z = focus_controller.auto_focus(**profile)
+            self._check_cancelled()
+            focus_samples.append((target_x, target_y, float(best_z)))
+
+        focus_plane = FocusPlane.from_samples(focus_samples)
+        print(
+            f"{magnification} focus plane | "
+            f"dZ/dX: {focus_plane.slope_x:.6f} | "
+            f"dZ/dY: {focus_plane.slope_y:.6f}"
+        )
+        self.update_scan_status(
+            processing_state=f"Applying {magnification} focus plane"
+        )
+        return focus_plane
+
+    def _move_to_scan_position(self, target_x, target_y, focus_plane):
+        expected_xy = self._move_stage_xy(
+            target_x,
+            target_y,
+            arm_capture=False,
+        )
+        predicted_z = focus_plane.z_at(target_x, target_y)
+        actual_z = self._move_stage_z(predicted_z)
+        # The Z move increments the stage motion sequence, so arm the camera
+        # only after both axes have settled.
+        self.frame_processor.arm_capture_after_motion(expected_xy)
+        return actual_z
 
     def _restore_stage_xy(self, starting_xy):
         """Return to a pre-scan XY even when the scan was cancelled."""
@@ -766,8 +916,14 @@ class ScanManager:
 
             coords, total_frames = coordinate_generator.generate_rect_coords(coordinates[2], coordinates[3])
 
-            self._move_stage_xy(center_x, center_y)
+            self._move_stage_xy(center_x, center_y, arm_capture=False)
             print(f"Moving to: ({center_x}, {center_y})")
+            focus_plane = self._calibrate_scan_focus_plane(
+                center_x,
+                center_y,
+                coords,
+                "10X",
+            )
 
             camera_width, camera_height = self.camera.get_Size()
 
@@ -779,10 +935,18 @@ class ScanManager:
 
             for j, (offset_x, offset_y) in enumerate(coords):
                 self._check_cancelled()
-                target_x = center_x + offset_x * PIXEL_SIZE["10X"][self.resolution] * RESOLUTION_DIM[self.resolution]["x"] * CROP_RATIO["10X"]["x"]
-                target_y = center_y - offset_y * PIXEL_SIZE["10X"][self.resolution] * RESOLUTION_DIM[self.resolution]["y"] * CROP_RATIO["10X"]["y"]
-
-                self._move_stage_xy(target_x, target_y)
+                target_x, target_y = self._scan_target_xy(
+                    center_x,
+                    center_y,
+                    offset_x,
+                    offset_y,
+                    "10X",
+                )
+                actual_z = self._move_to_scan_position(
+                    target_x,
+                    target_y,
+                    focus_plane,
+                )
 
                 img = self.frame_processor.capture_frame(
                     cancel_check=self._check_cancelled,
@@ -817,6 +981,7 @@ class ScanManager:
                         "map_height": int(true_map.shape[0]),
                         "stage_x_um": float(target_x),
                         "stage_y_um": float(target_y),
+                        "stage_z_um": actual_z,
                     },
                 )
 
@@ -832,6 +997,7 @@ class ScanManager:
                         "path": image_path,
                         "stage_x": float(target_x),
                         "stage_y": float(target_y),
+                        "stage_z": actual_z,
                         "magnification": "10X",
                         "pixel_size_um": float(PIXEL_SIZE["10X"][self.resolution]),
                     })
@@ -931,8 +1097,14 @@ class ScanManager:
 
             coords, total_frames = coordinate_generator.generate_rect_coords(coordinates[2], coordinates[3])
 
-            self._move_stage_xy(center_x, center_y)
+            self._move_stage_xy(center_x, center_y, arm_capture=False)
             print(f"Moving to: ({center_x}, {center_y})")
+            focus_plane = self._calibrate_scan_focus_plane(
+                center_x,
+                center_y,
+                coords,
+                "20X",
+            )
 
             camera_width, camera_height = self.camera.get_Size()
 
@@ -944,10 +1116,18 @@ class ScanManager:
 
             for j, (offset_x, offset_y) in enumerate(coords):
                 self._check_cancelled()
-                target_x = center_x + offset_x * PIXEL_SIZE["20X"][self.resolution] * RESOLUTION_DIM[self.resolution]["x"] * CROP_RATIO["20X"]["x"]
-                target_y = center_y - offset_y * PIXEL_SIZE["20X"][self.resolution] * RESOLUTION_DIM[self.resolution]["y"] * CROP_RATIO["20X"]["y"]
-
-                self._move_stage_xy(target_x, target_y)
+                target_x, target_y = self._scan_target_xy(
+                    center_x,
+                    center_y,
+                    offset_x,
+                    offset_y,
+                    "20X",
+                )
+                actual_z = self._move_to_scan_position(
+                    target_x,
+                    target_y,
+                    focus_plane,
+                )
 
                 img = self.frame_processor.capture_frame(
                     cancel_check=self._check_cancelled,
@@ -982,6 +1162,7 @@ class ScanManager:
                         "map_height": int(true_map.shape[0]),
                         "stage_x_um": float(target_x),
                         "stage_y_um": float(target_y),
+                        "stage_z_um": actual_z,
                     },
                 )
 
@@ -997,6 +1178,7 @@ class ScanManager:
                         "path": image_path,
                         "stage_x": float(target_x),
                         "stage_y": float(target_y),
+                        "stage_z": actual_z,
                         "magnification": "20X",
                         "pixel_size_um": float(PIXEL_SIZE["20X"][self.resolution]),
                     })
@@ -1192,6 +1374,14 @@ class ScanManager:
             detections = [
                 detection for detection in all_detections if int(detection[0]) == 1
             ]
+
+        if detection_model == "Region Detection" and detections:
+            region_dataset.save_region_training_images(
+                image_rgb,
+                detections,
+                region_dataset.NEW_FLAKE_FILTER_DIR / scan_path.name,
+                source_path.name,
+            )
 
         self.frame_processor.save_image(
             image=cv2.cvtColor(processed_rgb, cv2.COLOR_RGB2BGR),

@@ -281,6 +281,7 @@ class Flake_Identifier():
         pixel_size_um=None,
         legend_position=contour_finder.DEFAULT_LEGEND_POSITION,
         draw_legend=True,
+        draw_region_areas=True,
     ):
         if profile_path is None:
             raise ValueError("A scan profile is required for region detection.")
@@ -294,12 +295,9 @@ class Flake_Identifier():
             pixel_size_um=pixel_size_um,
             legend_position=legend_position,
             draw_legend=draw_legend,
+            draw_region_areas=draw_region_areas,
         )
-        matched_regions = [
-            region
-            for region in details["region_results"]
-            if region["matched_class"] is not None
-        ]
+        matched_regions = details["combined_region_results"]
         result = (scanned_image, matched_regions, bool(matched_regions))
         if return_segmented_map:
             return result + (details["classified_image_without_legend"],)

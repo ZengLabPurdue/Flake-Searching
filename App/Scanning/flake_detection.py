@@ -5,6 +5,10 @@ from pathlib import Path
 import cv2
 from Imaging import image_metadata
 from Scanning.flake_identifier import Flake_Identifier
+from Scanning.region_dataset import (
+    NEW_FLAKE_FILTER_DIR,
+    save_region_training_images,
+)
 
 
 FLAKE_CLASSIFICATIONS = {
@@ -91,6 +95,18 @@ class Flake_Detector:
                         )
                         if record is not None:
                             detection_records.append(record)
+
+                    if detection_model == "Region Detection" and detections:
+                        chip_folder = img_path.parent.parent
+                        scan_root = scan_path or chip_folder.parent.parent.parent
+                        save_region_training_images(
+                            img,
+                            detections,
+                            NEW_FLAKE_FILTER_DIR
+                            / scan_root.name
+                            / chip_folder.name,
+                            img_path.name,
+                        )
 
                     out_path = img_path.parent.parent / "Processed" / img_path.name
                     # Processed tiles are stitched into a map, so keep them

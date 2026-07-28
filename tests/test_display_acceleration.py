@@ -166,6 +166,27 @@ class DisplayAccelerationTests(unittest.TestCase):
                 )
                 self.assertTrue(calls[0][1]["preserve_context"])
 
+    def test_result_raw_path_finds_matching_10x_or_20x_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            result_path = scan_path / "Flakes Found" / "wafer 1" / "img_20x_3.png"
+            raw_path = (
+                scan_path
+                / "All Images"
+                / "20x"
+                / "wafer 1"
+                / "Raw"
+                / result_path.name
+            )
+            raw_path.parent.mkdir(parents=True)
+            raw_path.touch()
+
+            panel = ViewScansPanel.__new__(ViewScansPanel)
+            panel.view_scan_path = scan_path
+            panel.magnification_roots = {}
+
+            self.assertEqual(panel._raw_result_path(result_path), raw_path)
+
     def test_map_opencl_failure_falls_back_to_cpu(self):
         viewer = self._viewer_without_tk()
         viewer.render_backend = OPENCL_BACKEND
