@@ -14,14 +14,6 @@ DEFAULT_CONTRAST_MATCH_THRESHOLD = 3
 DEFAULT_REGION_FLOOD_FILL_THRESHOLD = 10
 CLASS_COLOR_SATURATION = 0.58
 CLASS_COLOR_LIGHTNESS = 0.72
-FILTER_BAD_COLOR = "bad_color"
-FILTER_INTENSITY_RANGE = "intensity_range"
-FILTER_COLOR_DISTANCE = "color_distance"
-FILTER_TYPES = {
-    FILTER_BAD_COLOR,
-    FILTER_INTENSITY_RANGE,
-    FILTER_COLOR_DISTANCE,
-}
 LEGEND_TOP_LEFT = "top_left"
 LEGEND_TOP_RIGHT = "top_right"
 LEGEND_BOTTOM_LEFT = "bottom_left"
@@ -115,13 +107,8 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
     if not isinstance(profile_data, dict):
         raise ValueError(f"Profile has invalid data: {profile_path}")
     saved_classes = profile_data.get("classes")
-    saved_filters = profile_data.get("filters", [])
     if not isinstance(saved_classes, list):
         raise ValueError(f"Profile has an invalid class list: {profile_path}")
-    if not isinstance(saved_filters, list):
-        raise ValueError(f"Profile has an invalid filter list: {profile_path}")
-    profile_version = profile_data.get("version", 1)
-
     profile_minimum, profile_maximum = _read_size_requirement(
         profile_data.get("size_requirement"),
         "Profile",
@@ -161,8 +148,7 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
         if not np.isfinite(tolerance) or not 0 <= tolerance <= 255:
             raise ValueError(f"Profile class {name!r} has an invalid tolerance.")
         identify = saved_class.get("identify", True)
-        reject = profile_version == 3 and saved_class.get("reject", False)
-        if not isinstance(identify, bool) or not isinstance(reject, bool):
+        if not isinstance(identify, bool):
             raise ValueError(f"Profile class {name!r} has invalid matching flags.")
         group = saved_class.get("group")
         if group is None:
@@ -173,111 +159,23 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
             saved_class.get("size_requirement"),
             f"Profile class {name!r}",
         )
-        if not reject or identify:
-            profile_classes.append({
-                "name": name,
-                "contrast_rgb": contrast_rgb,
-                "tolerance": tolerance,
-                # Keep display-map indexes contiguous when a version-three
-                # reject-only class is migrated into a filter.
-                "class_index": len(profile_classes),
-                "group": group.strip(),
-                "identify": identify,
-                "minimum_size_um": minimum,
-                "maximum_size_um": maximum,
-            })
-        if reject:
-            saved_filters.append({
-                "name": f"Filter {sum(item.get('_legacy_filter', False) for item in saved_filters) + 1}",
-                "type": FILTER_BAD_COLOR,
-                "contrast_rgb": contrast_rgb,
-                "tolerance": tolerance,
-                "_legacy_filter": True,
-            })
+        profile_classes.append({
+            "name": name,
+            "contrast_rgb": contrast_rgb,
+            "tolerance": tolerance,
+            "class_index": len(profile_classes),
+            "group": group.strip(),
+            "identify": identify,
+            "minimum_size_um": minimum,
+            "maximum_size_um": maximum,
+        })
 
     names = [item["name"].casefold() for item in profile_classes]
     if len(names) != len(set(names)):
         raise ValueError("Profile class names must be unique.")
-    profile_filters = []
-    for filter_index, saved_filter in enumerate(saved_filters, start=1):
-        if not isinstance(saved_filter, dict):
-            raise ValueError(f"Profile filter {filter_index} has invalid data.")
-        name = saved_filter.get("name")
-        filter_type = saved_filter.get("type")
-        if not isinstance(name, str) or not name.strip() or filter_type not in FILTER_TYPES:
-            raise ValueError(f"Profile filter {filter_index} is invalid.")
-        item = {"name": name.strip(), "type": filter_type}
-        if filter_type == FILTER_INTENSITY_RANGE:
-            intensity_range = saved_filter.get("intensity_range")
-            if not isinstance(intensity_range, dict):
-                raise ValueError(f"Profile filter {name!r} has an invalid intensity range.")
-            minimum = intensity_range.get("minimum")
-            maximum = intensity_range.get("maximum")
-            if any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not np.isfinite(value)
-                or not 0 <= value <= 255
-                for value in (minimum, maximum)
-            ) or minimum > maximum:
-                raise ValueError(f"Profile filter {name!r} has an invalid intensity range.")
-            item["minimum_intensity"] = float(minimum)
-            item["maximum_intensity"] = float(maximum)
-        else:
-            try:
-                item["contrast_rgb"] = _read_rgb_triplet(
-                    saved_filter["contrast_rgb"],
-                    "RGB contrast",
-                    name,
-                )
-            except KeyError as exc:
-                raise ValueError(
-                    f"Profile filter {name!r} is missing RGB contrast data."
-                ) from exc
-            if np.any(item["contrast_rgb"] < -255) or np.any(
-                item["contrast_rgb"] > 255
-            ):
-                raise ValueError(
-                    f"Profile filter {name!r} has an invalid RGB contrast."
-                )
-            if filter_type == FILTER_BAD_COLOR:
-                tolerance = saved_filter.get("tolerance")
-                if tolerance is None:
-                    try:
-                        tolerance = saved_filter["flood_fill"]["threshold"]
-                    except (KeyError, TypeError) as exc:
-                        raise ValueError(
-                            f"Profile filter {name!r} has no color tolerance."
-                        ) from exc
-                if (
-                    isinstance(tolerance, bool)
-                    or not isinstance(tolerance, (int, float))
-                    or not np.isfinite(tolerance)
-                    or not 0 <= tolerance <= 255
-                ):
-                    raise ValueError(f"Profile filter {name!r} has an invalid tolerance.")
-                item["tolerance"] = float(tolerance)
-            else:
-                distance = saved_filter.get("distance_threshold")
-                if (
-                    isinstance(distance, bool)
-                    or not isinstance(distance, (int, float))
-                    or not np.isfinite(distance)
-                    or distance < 0
-                ):
-                    raise ValueError(
-                        f"Profile filter {name!r} has an invalid color distance."
-                    )
-                item["distance_threshold"] = float(distance)
-        profile_filters.append(item)
-
-    filter_names = [item["name"].casefold() for item in profile_filters]
-    if len(filter_names) != len(set(filter_names)):
-        raise ValueError("Profile filter names must be unique.")
 
     return {
         "classes": profile_classes,
-        "filters": profile_filters,
         "minimum_size_um": profile_minimum,
         "maximum_size_um": profile_maximum,
     }
@@ -318,29 +216,6 @@ def match_profile_class(contrast_rgb, profile_classes, size_um=None):
                 difference,
             ))
     return min(matches, key=lambda match: match[0]) if matches else None
-
-
-def match_profile_filter(contrast_rgb, average_intensity, profile_filters):
-    """Return the first automatic rejection filter matched by a region."""
-    for profile_filter in profile_filters:
-        filter_type = profile_filter["type"]
-        if filter_type == FILTER_INTENSITY_RANGE:
-            if (
-                profile_filter["minimum_intensity"]
-                <= average_intensity
-                <= profile_filter["maximum_intensity"]
-            ):
-                return average_intensity, profile_filter, None
-            continue
-
-        difference = np.abs(contrast_rgb - profile_filter["contrast_rgb"])
-        distance = float(np.linalg.norm(difference))
-        if filter_type == FILTER_BAD_COLOR:
-            if np.all(difference <= profile_filter["tolerance"]):
-                return distance, profile_filter, difference
-        elif distance > profile_filter["distance_threshold"]:
-            return distance, profile_filter, difference
-    return None
 
 
 def generate_class_colors(profile_classes, color_seed=None):
@@ -395,23 +270,24 @@ def _deepest_contour_at_point(point, contour_indices, contours, depths):
     return max(containing, key=lambda index: depths[index]) if containing else contour_indices[0]
 
 
-def _flood_fill_region(gray_image, seed_point, allowed_mask, threshold):
-    """Run fixed-range, 8-connected flood fill without changing the source."""
+def _flood_fill_region(image_rgb, seed_point, allowed_mask, threshold):
+    """Run fixed-range, 8-connected RGB flood fill without changing the source."""
     if not allowed_mask[seed_point[1], seed_point[0]]:
-        return np.zeros(gray_image.shape, dtype=bool)
+        return np.zeros(image_rgb.shape[:2], dtype=bool)
     flood_mask = np.ones(
-        (gray_image.shape[0] + 2, gray_image.shape[1] + 2),
+        (image_rgb.shape[0] + 2, image_rgb.shape[1] + 2),
         dtype=np.uint8,
     )
     flood_mask[1:-1, 1:-1] = np.where(allowed_mask, 0, 1).astype(np.uint8)
     flags = 8 | cv2.FLOODFILL_FIXED_RANGE | cv2.FLOODFILL_MASK_ONLY | (255 << 8)
+    color_tolerance = (threshold, threshold, threshold)
     cv2.floodFill(
-        gray_image,
+        image_rgb,
         flood_mask,
         seed_point,
-        0,
-        threshold,
-        threshold,
+        (0, 0, 0),
+        color_tolerance,
+        color_tolerance,
         flags,
     )
     return flood_mask[1:-1, 1:-1] == 255
@@ -458,7 +334,6 @@ def _prepare_classification_workspace(
     if len(background_pixels) == 0:
         raise ValueError("The detected contours cover the entire image background.")
     background_color = np.rint(np.mean(background_pixels, axis=0))
-    rejected_region_mask = np.zeros((height, width), dtype=np.uint8)
     return {
         "height": height,
         "width": width,
@@ -470,8 +345,6 @@ def _prepare_classification_workspace(
         "all_internal_mask": np.zeros((height, width), dtype=np.uint8),
         "matched_region_mask": np.zeros((height, width), dtype=np.uint8),
         "matched_internal_mask": np.zeros((height, width), dtype=np.uint8),
-        "rejected_region_mask": rejected_region_mask,
-        "filtered_region_mask": rejected_region_mask,
         "class_masks": {},
         "region_results": [],
     }
@@ -617,19 +490,15 @@ def _extract_external_components(
     }
 
 
-def _prepare_flood_inputs(gray_image, external_region, local_seed):
+def _prepare_flood_inputs(image_rgb, external_region, local_seed):
     return (
-        np.ascontiguousarray(gray_image[
+        np.ascontiguousarray(image_rgb[
             external_region["y1"]:external_region["y2"],
             external_region["x1"]:external_region["x2"],
         ]),
         external_region["local_external_mask"] > 0,
         local_seed,
     )
-
-
-def _contour_component_mask(component_labels, component_label):
-    return component_labels == component_label
 
 
 def _measure_contour_colors(
@@ -755,22 +624,9 @@ def _match_region(
     color_measurement,
     geometry,
     profile_classes,
-    profile_filters,
     benchmark_stats,
 ):
-    filter_match = (
-        _timed_call(
-            benchmark_stats,
-            "match_profile_filter",
-            match_profile_filter,
-            color_measurement["contrast"],
-            color_measurement["average_intensity"],
-            profile_filters or (),
-        )
-        if geometry["inside_profile_size"] and profile_filters
-        else None
-    )
-    match = (
+    return (
         _timed_call(
             benchmark_stats,
             "match_profile_class",
@@ -782,11 +638,9 @@ def _match_region(
         if (
             profile_classes
             and geometry["inside_profile_size"]
-            and filter_match is None
         )
         else None
     )
-    return filter_match, match
 
 
 def _update_region_masks(
@@ -797,15 +651,12 @@ def _update_region_masks(
     x2,
     y2,
     region_type,
-    matched_filter,
     matched_class,
 ):
     workspace["all_region_mask"][y1:y2, x1:x2][region_mask] = 255
     workspace["region_overlap_count_map"][y1:y2, x1:x2][region_mask] += 1
     if region_type == "internal":
         workspace["all_internal_mask"][y1:y2, x1:x2][region_mask] = 255
-    if matched_filter:
-        workspace["filtered_region_mask"][y1:y2, x1:x2][region_mask] = 255
     if not matched_class:
         return
     workspace["matched_region_mask"][y1:y2, x1:x2][region_mask] = 255
@@ -827,9 +678,7 @@ def _make_region_result(
     nesting_depth,
     color_measurement,
     geometry,
-    matched_filter,
     matched_class,
-    filter_match,
     match,
     flood_filled,
     region_mask,
@@ -870,12 +719,6 @@ def _make_region_result(
         "matched_group": (
             (matched_class.get("group") or None) if matched_class else None
         ),
-        "filtered": matched_filter is not None,
-        "filtered_by": matched_filter["name"] if matched_filter else None,
-        "filter_type": matched_filter["type"] if matched_filter else None,
-        "rejected": matched_filter is not None,
-        "rejected_by_class": None,
-        "rejected_by_group": None,
         "size_um": float(size_um) if size_um is not None else None,
         "area_um2": float(area_um2) if area_um2 is not None else None,
         "inside_profile_size": geometry["inside_profile_size"],
@@ -883,17 +726,11 @@ def _make_region_result(
             matched_class["display_color_rgb"] if matched_class else None
         ),
         "match_threshold": matched_class["tolerance"] if matched_class else None,
-        "match_distance": (
-            match[0] if match else (filter_match[0] if filter_match else None)
-        ),
+        "match_distance": match[0] if match else None,
         "channel_difference_rgb": (
             tuple(float(value) for value in match[2])
             if match and match[2] is not None
-            else (
-                tuple(float(value) for value in filter_match[2])
-                if filter_match and filter_match[2] is not None
-                else None
-            )
+            else None
         ),
         "pixel_count": geometry["pixel_count"],
         "bounding_box": geometry["bounding_box"],
@@ -928,7 +765,6 @@ def classify_contour_regions(
     pixel_size_um=None,
     minimum_size_um=None,
     maximum_size_um=None,
-    profile_filters=None,
 ):
     """Classify contour interiors first, then flood-fill identified regions."""
     _timed_call(
@@ -956,14 +792,6 @@ def classify_contour_regions(
         _contour_depths,
         hierarchy,
     )
-    gray_image = _timed_call(
-        benchmark_stats,
-        "convert_to_grayscale",
-        cv2.cvtColor,
-        image_rgb,
-        cv2.COLOR_RGB2GRAY,
-    )
-
     for external_index in external_indices:
         external_region = _timed_call(
             benchmark_stats,
@@ -1018,27 +846,25 @@ def classify_contour_regions(
             )
             nesting_depth = max(0, (depth_difference + 1) // 2)
             region_type = "external" if nesting_depth == 0 else "internal"
-            filter_match, match = _timed_call(
+            match = _timed_call(
                 benchmark_stats,
                 "match_region",
                 _match_region,
                 color_measurement,
                 contour_geometry,
                 profile_classes,
-                profile_filters,
                 benchmark_stats,
             )
-            matched_filter = filter_match[1] if filter_match else None
             matched_class = match[1] if match else None
             region_mask = None
             result_geometry = contour_geometry
             flood_filled = False
             if matched_class is not None:
-                gray_region, allowed_mask, local_seed = _timed_call(
+                color_region, allowed_mask, local_seed = _timed_call(
                     benchmark_stats,
                     "prepare_flood_inputs",
                     _prepare_flood_inputs,
-                    gray_image,
+                    image_rgb,
                     external_region,
                     local_seed,
                 )
@@ -1046,7 +872,7 @@ def classify_contour_regions(
                     benchmark_stats,
                     "flood_fill_region",
                     _flood_fill_region,
-                    gray_region,
+                    color_region,
                     local_seed,
                     allowed_mask,
                     flood_fill_threshold,
@@ -1071,17 +897,6 @@ def classify_contour_regions(
                     ]
                     result_geometry = flooded_geometry
                     flood_filled = True
-            elif matched_filter is not None:
-                # Filters reject before region creation. Their contour interior
-                # is retained only so preview output can show what was removed.
-                region_mask = _timed_call(
-                    benchmark_stats,
-                    "build_filtered_contour_mask",
-                    _contour_component_mask,
-                    external_region["component_labels"],
-                    component["component_label"],
-                )
-
             if region_mask is not None:
                 _timed_call(
                     benchmark_stats,
@@ -1094,7 +909,6 @@ def classify_contour_regions(
                     x2,
                     y2,
                     region_type,
-                    matched_filter,
                     matched_class,
                 )
             workspace["region_results"].append(_timed_call(
@@ -1106,9 +920,7 @@ def classify_contour_regions(
                 nesting_depth,
                 color_measurement,
                 result_geometry,
-                matched_filter,
                 matched_class,
-                filter_match,
                 match,
                 flood_filled,
                 region_mask,
@@ -1133,8 +945,6 @@ def classify_contour_regions(
         "all_internal_mask": workspace["all_internal_mask"],
         "matched_region_mask": workspace["matched_region_mask"],
         "matched_internal_mask": workspace["matched_internal_mask"],
-        "rejected_region_mask": workspace["rejected_region_mask"],
-        "filtered_region_mask": workspace["filtered_region_mask"],
         "class_index_map": class_index_map,
         "class_masks": workspace["class_masks"],
         "class_overlap_count_map": class_overlap_count_map,

@@ -13,10 +13,6 @@ from Scanning import contour_finder
 from Scanning.contour_extractor import get_region_from_point
 from Scanning.contour_finder import region_contrast_rgb
 from Scanning.scan_profile import (
-    FILTER_BAD_COLOR,
-    FILTER_COLOR_DISTANCE,
-    FILTER_INTENSITY_RANGE,
-    FILTER_TYPE_LABELS,
     ScanProfile,
     ScanProfileError,
     build_region_overlay,
@@ -27,14 +23,8 @@ class ScanProfilePanel:
     IMAGE_TYPES = [("Images", "*.png *.jpg *.jpeg *.bmp")]
     CLASS_IMAGE_TYPES = [("Vignette-corrected PNG", "*.png")]
     DEFAULT_FLOOD_FILL_TOLERANCE = 15
-    DEFAULT_INTENSITY_MINIMUM = 0
-    DEFAULT_INTENSITY_MAXIMUM = 30
-    DEFAULT_COLOR_DISTANCE = 30
     PREVIEW_LEGEND_POSITION = contour_finder.LEGEND_TOP_RIGHT
     SIMILAR_CLASS_CONTRAST_DISTANCE = 10.0
-    FILTER_LABEL_TO_TYPE = {
-        label: filter_type for filter_type, label in FILTER_TYPE_LABELS.items()
-    }
 
     def __init__(self, parent, root, app, scan_profile: ScanProfile):
         self.parent = parent
@@ -47,9 +37,7 @@ class ScanProfilePanel:
         self.editor_kind: str | None = None
         self.selected_item: tuple[str, int] | None = None
         self.editing_class_index: int | None = None
-        self.editing_filter_index: int | None = None
         self.pending_new_class = False
-        self.pending_new_filter = False
         self._updating_item_list = False
         self._display_items: list[tuple[str, int]] = []
         self.drag_class_index = None
@@ -74,12 +62,8 @@ class ScanProfilePanel:
         self.minimum_size_var = tk.StringVar()
         self.maximum_size_var = tk.StringVar()
         self.threshold_var = tk.StringVar(value=str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
-        self.filter_type_var = tk.StringVar(value=FILTER_TYPE_LABELS[FILTER_BAD_COLOR])
-        self.minimum_intensity_var = tk.StringVar(value=str(self.DEFAULT_INTENSITY_MINIMUM))
-        self.maximum_intensity_var = tk.StringVar(value=str(self.DEFAULT_INTENSITY_MAXIMUM))
-        self.color_distance_var = tk.StringVar(value=str(self.DEFAULT_COLOR_DISTANCE))
         self.editor_title_var = tk.StringVar(value="Class")
-        self.tolerance_label_var = tk.StringVar(value="Tolerance")
+        self.tolerance_label_var = tk.StringVar(value="Color tolerance")
         self.contrast_var = tk.StringVar(value="RGB contrast: —")
         self.item_count_var = tk.StringVar(value="Items: 0")
         self.preview_enabled_var = tk.BooleanVar(value=False)
@@ -200,13 +184,7 @@ class ScanProfilePanel:
             command=self.new_class,
         )
         self.new_class_button.grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        self.new_filter_button = ttk.Button(
-            item_buttons,
-            text="New filter",
-            style="Normal.TButton",
-            command=self.new_filter,
-        )
-        self.new_filter_button.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        self.new_class_button.grid_configure(columnspan=2, padx=0)
         self.edit_item_button = ttk.Button(
             item_buttons,
             text="Edit selected",
@@ -297,56 +275,6 @@ class ScanProfilePanel:
             style="Profile.TCheckbutton",
         )
         self.identify_check.pack(anchor="w", pady=(4, 0))
-
-        self.filter_options = Frame(self.dynamic_editor, bg="white")
-        filter_type_row = Frame(self.filter_options, bg="white")
-        filter_type_row.pack(fill="x", pady=(5, 0))
-        Label(filter_type_row, text="Type", bg="white", fg="black").pack(side="left")
-        self.filter_type_combo = ttk.Combobox(
-            filter_type_row,
-            textvariable=self.filter_type_var,
-            values=list(self.FILTER_LABEL_TO_TYPE),
-            state="readonly",
-        )
-        self.filter_type_combo.pack(side="left", fill="x", expand=True, padx=(6, 0))
-        self.filter_type_combo.bind("<<ComboboxSelected>>", self._on_filter_type_changed)
-
-        self.intensity_options = Frame(self.filter_options, bg="white")
-        Label(self.intensity_options, text="Bad intensity", bg="white", fg="black").pack(
-            side="left"
-        )
-        Label(self.intensity_options, text="Min", bg="white", fg="black").pack(
-            side="left", padx=(7, 3)
-        )
-        self.minimum_intensity_entry = ttk.Entry(
-            self.intensity_options,
-            textvariable=self.minimum_intensity_var,
-            width=6,
-        )
-        self.minimum_intensity_entry.pack(side="left", fill="x", expand=True)
-        Label(self.intensity_options, text="Max", bg="white", fg="black").pack(
-            side="left", padx=(7, 3)
-        )
-        self.maximum_intensity_entry = ttk.Entry(
-            self.intensity_options,
-            textvariable=self.maximum_intensity_var,
-            width=6,
-        )
-        self.maximum_intensity_entry.pack(side="left", fill="x", expand=True)
-
-        self.distance_options = Frame(self.filter_options, bg="white")
-        Label(
-            self.distance_options,
-            text="Maximum color distance",
-            bg="white",
-            fg="black",
-        ).pack(side="left")
-        self.color_distance_entry = ttk.Entry(
-            self.distance_options,
-            textvariable=self.color_distance_var,
-            width=8,
-        )
-        self.color_distance_entry.pack(side="right")
 
         self.region_options = Frame(self.dynamic_editor, bg="white")
         region_row = Frame(self.region_options, bg="white")
@@ -477,7 +405,6 @@ class ScanProfilePanel:
             self.profile_minimum_size_entry,
             self.profile_maximum_size_entry,
             self.new_class_button,
-            self.new_filter_button,
             self.edit_item_button,
             self.copy_item_button,
             self.extend_profile_button,
@@ -490,10 +417,6 @@ class ScanProfilePanel:
             self.class_name_entry,
             self.class_group_combo,
             self.identify_check,
-            self.filter_type_combo,
-            self.minimum_intensity_entry,
-            self.maximum_intensity_entry,
-            self.color_distance_entry,
             self.load_image_button,
             self.threshold_spinbox,
             self.minimum_size_entry,
@@ -514,10 +437,10 @@ class ScanProfilePanel:
         self._reset_preview()
         self._set_editing_enabled(True)
         self._refresh_item_list()
-        self.status_var.set("Name the profile, then create a class or filter.")
+        self.status_var.set("Name the profile, then create a class.")
         self.app.set_view("Create Search Profile")
         self.show()
-        self.app.display_image_message("Create a class, filter, or load a preview image.")
+        self.app.display_image_message("Create a class or load a preview image.")
         self.profile_name_entry.focus_set()
 
     def choose_and_load_profile(self):
@@ -526,7 +449,7 @@ class ScanProfilePanel:
         self._set_item_editing_enabled(False)
         self.app.set_view("Load Search Profile")
         self.show()
-        self.app.display_image_message("Open a profile, then select a class or filter.")
+        self.app.display_image_message("Open a profile, then select a class.")
         selected = self._choose_profile_path("Load Scan Search Profile")
         if not selected:
             return
@@ -539,8 +462,7 @@ class ScanProfilePanel:
         self.app.set_active_scan_profile(profile)
         messagebox.showinfo(
             "Profile Loaded",
-            f"Loaded '{profile.name}' with {len(profile.classes)} class(es) "
-            f"and {len(profile.filters)} filter(s).",
+            f"Loaded '{profile.name}' with {len(profile.classes)} class(es).",
         )
 
     def show_loaded_profile(self, profile: ScanProfile):
@@ -562,7 +484,7 @@ class ScanProfilePanel:
         )
         self.app.set_view("Load Search Profile")
         self.show()
-        self.app.display_image_message("Select a class or filter, or load a preview image.")
+        self.app.display_image_message("Select a class or load a preview image.")
 
     def new_class(self):
         if self.class_edit_active:
@@ -571,9 +493,7 @@ class ScanProfilePanel:
         self._clear_list_selection()
         self.editor_kind = "class"
         self.pending_new_class = True
-        self.pending_new_filter = False
         self.editing_class_index = None
-        self.editing_filter_index = None
         self.selected_item = None
         self.class_name_var.set(self._next_default_class_name())
         self.class_group_var.set("")
@@ -594,50 +514,19 @@ class ScanProfilePanel:
             self.app.display_image_message("Open an image to create this class.")
         self.class_name_entry.focus_set()
 
-    def new_filter(self):
-        if self.class_edit_active:
-            self._show_confirm_current_message()
-            return
-        self._clear_list_selection()
-        self.editor_kind = "filter"
-        self.pending_new_class = False
-        self.pending_new_filter = True
-        self.editing_class_index = None
-        self.editing_filter_index = None
-        self.selected_item = None
-        self.class_name_var.set(self.scan_profile._next_filter_name())
-        self.filter_type_var.set(FILTER_TYPE_LABELS[FILTER_BAD_COLOR])
-        self.threshold_var.set(str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
-        self.minimum_intensity_var.set(str(self.DEFAULT_INTENSITY_MINIMUM))
-        self.maximum_intensity_var.set(str(self.DEFAULT_INTENSITY_MAXIMUM))
-        self.color_distance_var.set(str(self.DEFAULT_COLOR_DISTANCE))
-        source_available = self.current_image_bgr is not None
-        self._clear_region_selection()
-        self._show_editor_options("filter")
-        self._set_item_editing_enabled(True)
-        self._refresh_item_list(select_pending=True)
-        if source_available:
-            self._display_bgr(self.current_image_bgr)
-            self.status_var.set("Choose a filter type, then confirm its settings.")
-        else:
-            self.status_var.set("Choose a filter type. Color filters also need an image.")
-
     def edit_selected_item(self):
         selected = self._selected_list_item()
         if selected is None:
-            messagebox.showinfo("Edit Item", "Select a confirmed class or filter first.")
+            messagebox.showinfo("Edit Class", "Select a confirmed class first.")
             return
-        kind, index = selected
-        self.editor_kind = kind
-        self.editing_class_index = index if kind == "class" else None
-        self.editing_filter_index = index if kind == "filter" else None
+        _kind, index = selected
+        self.editor_kind = "class"
+        self.editing_class_index = index
         self.pending_new_class = False
-        self.pending_new_filter = False
-        self._show_editor_options(kind)
+        self._show_editor_options("class")
         self._set_item_editing_enabled(True)
         self.status_var.set(f"Editing {self.class_name_var.get()}.")
-        if kind == "class":
-            self.class_name_entry.focus_set()
+        self.class_name_entry.focus_set()
 
     def copy_selected_item(self):
         if self.class_edit_active:
@@ -645,21 +534,16 @@ class ScanProfilePanel:
             return
         selected = self._selected_list_item()
         if selected is None:
-            messagebox.showinfo("Copy Item", "Select a confirmed class or filter first.")
+            messagebox.showinfo("Copy Class", "Select a confirmed class first.")
             return
-        kind, index = selected
-        if kind == "class":
-            copied = self.scan_profile.copy_class(index)
-            new_index = len(self.scan_profile.classes) - 1
-        else:
-            copied = self.scan_profile.copy_filter(index)
-            new_index = len(self.scan_profile.filters) - 1
-        self._refresh_item_list(select_item=(kind, new_index))
+        _kind, index = selected
+        copied = self.scan_profile.copy_class(index)
+        new_index = len(self.scan_profile.classes) - 1
+        self._refresh_item_list(select_item=("class", new_index))
         self._on_item_selected()
-        self.editor_kind = kind
-        self.editing_class_index = new_index if kind == "class" else None
-        self.editing_filter_index = new_index if kind == "filter" else None
-        self._show_editor_options(kind)
+        self.editor_kind = "class"
+        self.editing_class_index = new_index
+        self._show_editor_options("class")
         self._set_item_editing_enabled(True)
         self.status_var.set(f"Copied as {copied['name']}. Modify it, then confirm.")
 
@@ -672,18 +556,17 @@ class ScanProfilePanel:
             return
         try:
             source_profile = ScanProfile(self.scan_profile.profiles_dir).load_profile(selected)
-            added_classes, added_filters = self.scan_profile.extend_from_profile(source_profile)
+            added_classes = self.scan_profile.extend_from_profile(source_profile)
         except (OSError, ScanProfileError) as exc:
             messagebox.showerror("Profile Extend Error", str(exc))
             return
         self._refresh_item_list()
         self.status_var.set(
-            f"Added {len(added_classes)} class(es) and {len(added_filters)} filter(s) "
-            f"from {source_profile.name}."
+            f"Added {len(added_classes)} class(es) from {source_profile.name}."
         )
 
     def remove_selected_item(self):
-        if self.pending_new_class or self.pending_new_filter:
+        if self.pending_new_class:
             self._reset_editor()
             self._refresh_item_list()
             self.status_var.set("Cancelled the unconfirmed item.")
@@ -691,12 +574,8 @@ class ScanProfilePanel:
         selected = self._selected_list_item()
         if selected is None:
             return
-        kind, index = selected
-        removed = (
-            self.scan_profile.remove_class(index)
-            if kind == "class"
-            else self.scan_profile.remove_filter(index)
-        )
+        _kind, index = selected
+        removed = self.scan_profile.remove_class(index)
         self._reset_editor()
         self._clear_pending_image()
         self._refresh_item_list()
@@ -704,7 +583,7 @@ class ScanProfilePanel:
         self.app.display_image_message("Select an item or load a preview image.")
 
     def load_item_image(self):
-        if not self.class_edit_active or self.editor_kind not in ("class", "filter"):
+        if not self.class_edit_active or self.editor_kind != "class":
             self._show_create_or_edit_item_prompt()
             return
         selected = filedialog.askopenfilename(
@@ -717,7 +596,7 @@ class ScanProfilePanel:
         if not image_metadata.is_vignette_corrected(source_path):
             messagebox.showwarning(
                 "Vignette Correction Required",
-                "Only PNG images saved with vignette correction can define classes or color filters.",
+                "Only PNG images saved with vignette correction can define classes.",
             )
             return
         image_bgr = self._read_bgr_image(source_path)
@@ -738,10 +617,7 @@ class ScanProfilePanel:
         if not self.class_edit_active:
             self._show_create_or_edit_item_prompt()
             return
-        if self.editor_kind == "filter":
-            self._confirm_filter()
-        else:
-            self._confirm_class()
+        self._confirm_class()
 
     def _confirm_class(self):
         if not self._region_is_ready():
@@ -806,49 +682,6 @@ class ScanProfilePanel:
             f"Confirmed {profile_class['name']}. RGB contrast: {profile_class['contrast_rgb']}.",
         )
 
-    def _confirm_filter(self):
-        filter_type = self._selected_filter_type()
-        target_index = self.editing_filter_index
-        try:
-            if filter_type == FILTER_INTENSITY_RANGE:
-                minimum_intensity, maximum_intensity = self._get_intensity_range()
-                profile_filter = self.scan_profile.set_filter(
-                    filter_type,
-                    minimum_intensity=minimum_intensity,
-                    maximum_intensity=maximum_intensity,
-                    index=target_index,
-                )
-            else:
-                if not self._region_is_ready():
-                    return
-                threshold = self._get_threshold()
-                if threshold != self.current_threshold:
-                    self._show_select_region_again()
-                    return
-                distance = (
-                    self._get_color_distance()
-                    if filter_type == FILTER_COLOR_DISTANCE
-                    else None
-                )
-                profile_filter = self.scan_profile.set_filter(
-                    filter_type,
-                    source_path=self.current_source_path,
-                    image_bgr=self.current_image_bgr.copy(),
-                    region_mask=self.current_region_mask.copy(),
-                    seed_point=self.current_seed_point,
-                    threshold=self.current_threshold,
-                    distance_threshold=distance,
-                    index=target_index,
-                )
-        except ScanProfileError as exc:
-            messagebox.showwarning("Invalid Filter", str(exc))
-            return
-        self._finish_item_confirmation(
-            profile_filter,
-            f"Confirmed {profile_filter['name']}: "
-            f"{FILTER_TYPE_LABELS[profile_filter['type']]}",
-        )
-
     def _finish_item_confirmation(self, item, status):
         if self.current_image_bgr is not None:
             self._display_bgr(self.current_image_bgr)
@@ -887,8 +720,8 @@ class ScanProfilePanel:
         if self.preview_image_bgr is None:
             messagebox.showinfo("Preview Image", "Load a preview image first.")
             return
-        if not self.scan_profile.classes and not self.scan_profile.filters:
-            messagebox.showinfo("Empty Profile", "Add at least one class or filter first.")
+        if not self.scan_profile.classes:
+            messagebox.showinfo("Empty Profile", "Add at least one class first.")
             return
         try:
             self.status_var.set("Running profile preview...")
@@ -911,16 +744,14 @@ class ScanProfilePanel:
             messagebox.showerror("Profile Preview Error", str(exc))
             return
         self.preview_result_rgb = result_rgb.copy()
-        self.preview_result_rgb[details["filtered_region_mask"] > 0] = (255, 70, 70)
         self.preview_time_var.set(f"Preview time: {elapsed_seconds:.3f}s")
         self.preview_enabled_var.set(True)
         self.preview_toggle.state(["!disabled"])
         self.toggle_profile_preview()
         matched = sum(item["matched_class"] is not None for item in details["region_results"])
-        filtered = sum(item.get("filtered", False) for item in details["region_results"])
         self.status_var.set(
             f"Preview complete in {elapsed_seconds:.3f}s: "
-            f"{matched} identified, {filtered} filtered, "
+            f"{matched} identified, "
             f"{len(details['region_results'])} total regions."
         )
 
@@ -971,9 +802,6 @@ class ScanProfilePanel:
         if not self.class_edit_active:
             self._show_create_or_edit_item_prompt()
             return
-        if self.editor_kind == "filter" and self._selected_filter_type() == FILTER_INTENSITY_RANGE:
-            self.status_var.set("Intensity-range filters do not require a reference region.")
-            return
         if self.current_image_bgr is None:
             messagebox.showinfo("Load Image", "Load an image before selecting a region.")
             return
@@ -993,7 +821,9 @@ class ScanProfilePanel:
             messagebox.showerror("Region Selection Error", str(exc))
             return
         if contour is None or not np.any(region_mask > 0):
-            self.status_var.set("No region was found. Try another point or tolerance.")
+            self.status_var.set(
+                "No region was found. Try another point or color tolerance."
+            )
             return
         try:
             contrast = region_contrast_rgb(self.current_image_bgr, region_mask)
@@ -1017,17 +847,12 @@ class ScanProfilePanel:
         if selected is None:
             return
         self.pending_new_class = False
-        self.pending_new_filter = False
         kind, index = selected
         self.selected_item = selected
         self.editor_kind = kind
         self.editing_class_index = None
-        self.editing_filter_index = None
         self._set_item_editing_enabled(False)
-        if kind == "class":
-            self._load_class_into_editor(index)
-        else:
-            self._load_filter_into_editor(index)
+        self._load_class_into_editor(index)
         self._show_editor_options(kind)
         self.status_var.set(
             f"Selected {self.class_name_var.get()}. Click Edit selected to modify it."
@@ -1047,23 +872,6 @@ class ScanProfilePanel:
         )
         self._load_region_reference(item)
 
-    def _load_filter_into_editor(self, index):
-        item = self.scan_profile.get_filter(index)
-        self.class_name_var.set(item["name"])
-        self.filter_type_var.set(FILTER_TYPE_LABELS[item["type"]])
-        if item["type"] == FILTER_INTENSITY_RANGE:
-            self.minimum_intensity_var.set(f"{item['minimum_intensity']:g}")
-            self.maximum_intensity_var.set(f"{item['maximum_intensity']:g}")
-            self._clear_pending_image()
-            self.app.display_image_message(
-                f"{item['name']} rejects regions inside its intensity range."
-            )
-        else:
-            self.threshold_var.set(str(item["threshold"]))
-            if item["type"] == FILTER_COLOR_DISTANCE:
-                self.color_distance_var.set(f"{item['distance_threshold']:g}")
-            self._load_region_reference(item)
-
     def _load_region_reference(self, item):
         self.current_source_path = item["source_path"]
         self.current_image_bgr = item["image_bgr"].copy()
@@ -1082,9 +890,6 @@ class ScanProfilePanel:
 
     def _show_editor_options(self, kind):
         self.class_options.pack_forget()
-        self.filter_options.pack_forget()
-        self.intensity_options.pack_forget()
-        self.distance_options.pack_forget()
         self.region_options.pack_forget()
         self.class_size_options.pack_forget()
         self.contrast_label.pack_forget()
@@ -1097,41 +902,13 @@ class ScanProfilePanel:
         if not self.editor_heading.winfo_manager():
             self.editor_heading.pack(anchor="w", pady=(9, 0), before=self.preview_heading)
             self.editor.pack(fill="x", pady=(4, 0), before=self.preview_heading)
-        self.editor_title_var.set("Class" if kind == "class" else "Filter")
-        if kind == "class":
-            self.class_options.pack(fill="x")
-            self.region_options.pack(fill="x")
-            self.class_size_options.pack(fill="x", pady=(5, 0))
-            self.contrast_label.pack(anchor="w", pady=(5, 0))
-            self.confirm_item_button.configure(text="Confirm class")
-        else:
-            self.filter_options.pack(fill="x")
-            self._show_filter_type_options()
-            self.confirm_item_button.configure(text="Confirm filter")
+        self.editor_title_var.set("Class")
+        self.class_options.pack(fill="x")
+        self.region_options.pack(fill="x")
+        self.class_size_options.pack(fill="x", pady=(5, 0))
+        self.contrast_label.pack(anchor="w", pady=(5, 0))
+        self.confirm_item_button.configure(text="Confirm class")
         self.confirm_item_button.pack(pady=(5, 0))
-        self._schedule_footer_resize()
-
-    def _show_filter_type_options(self):
-        self.intensity_options.pack_forget()
-        self.distance_options.pack_forget()
-        self.region_options.pack_forget()
-        self.contrast_label.pack_forget()
-        filter_type = self._selected_filter_type()
-        if filter_type == FILTER_INTENSITY_RANGE:
-            self.intensity_options.pack(fill="x", pady=(5, 0))
-        else:
-            if filter_type == FILTER_COLOR_DISTANCE:
-                self.distance_options.pack(fill="x", pady=(5, 0))
-                self.tolerance_label_var.set("Flood tolerance")
-            else:
-                self.tolerance_label_var.set("Tolerance")
-            self.region_options.pack(fill="x")
-            self.contrast_label.pack(anchor="w", pady=(5, 0))
-
-    def _on_filter_type_changed(self, event=None):
-        if self.editor_kind != "filter":
-            return
-        self._show_filter_type_options()
         self._schedule_footer_resize()
 
     def _set_editing_enabled(self, enabled):
@@ -1143,11 +920,6 @@ class ScanProfilePanel:
         self.class_edit_active = bool(enabled)
         for widget in self.item_edit_widgets:
             widget.state(["!disabled"] if enabled else ["disabled"])
-        if enabled and self.editor_kind == "filter":
-            self.class_name_entry.state(["disabled"])
-            self.filter_type_combo.state(["!disabled", "readonly"])
-        elif enabled and self.editor_kind == "class":
-            self.filter_type_combo.state(["disabled"])
 
     def _refresh_item_list(
         self,
@@ -1162,20 +934,11 @@ class ScanProfilePanel:
             for index, profile_class in enumerate(self.scan_profile.classes):
                 self.class_list.insert(tk.END, self._class_list_text(profile_class))
                 self._display_items.append(("class", index))
-            for index, profile_filter in enumerate(self.scan_profile.filters):
-                self.class_list.insert(tk.END, self._filter_list_text(profile_filter))
-                self._display_items.append(("filter", index))
             if self.pending_new_class:
                 self.class_list.insert(tk.END, f"[C][I] {self.class_name_var.get()}")
-            elif self.pending_new_filter:
-                self.class_list.insert(tk.END, f"[F] {self.class_name_var.get()}")
             class_count = len(self.scan_profile.classes)
-            filter_count = len(self.scan_profile.filters)
-            pending_count = int(self.pending_new_class or self.pending_new_filter)
-            self.item_count_var.set(
-                f"Items: {class_count + filter_count + pending_count} "
-                f"({class_count} C, {filter_count} F)"
-            )
+            pending_count = int(self.pending_new_class)
+            self.item_count_var.set(f"Classes: {class_count + pending_count}")
             self.class_group_combo.configure(values=self.scan_profile.groups)
             if select_item is not None:
                 try:
@@ -1185,7 +948,7 @@ class ScanProfilePanel:
                 else:
                     self.class_list.selection_set(list_index)
                     self.class_list.activate(list_index)
-            elif select_pending and (self.pending_new_class or self.pending_new_filter):
+            elif select_pending and self.pending_new_class:
                 list_index = len(self._display_items)
                 self.class_list.selection_set(list_index)
                 self.class_list.activate(list_index)
@@ -1197,10 +960,6 @@ class ScanProfilePanel:
         tags = "[C][I]" if profile_class["identify"] else "[C]"
         group = f"{profile_class['group']} / " if profile_class["group"] else ""
         return f"{tags} {group}{profile_class['name']}"
-
-    @staticmethod
-    def _filter_list_text(profile_filter):
-        return f"[F] {profile_filter['name']} - {FILTER_TYPE_LABELS[profile_filter['type']]}"
 
     def _selected_list_item(self):
         selection = self.class_list.curselection()
@@ -1214,12 +973,12 @@ class ScanProfilePanel:
     def _on_item_name_changed(self, *_):
         if self._updating_item_list or not self.class_edit_active:
             return
-        if self.pending_new_class or self.pending_new_filter:
+        if self.pending_new_class:
             self._refresh_item_list(select_pending=True)
 
     def _start_class_drag(self, event):
         self.drag_class_index = None
-        if self.class_edit_active or self.pending_new_class or self.pending_new_filter:
+        if self.class_edit_active or self.pending_new_class:
             return
         list_index = self.class_list.nearest(event.y)
         if not 0 <= list_index < len(self._display_items):
@@ -1250,19 +1009,15 @@ class ScanProfilePanel:
     def _end_class_drag(self, event):
         self.drag_class_index = None
 
-    def _selected_filter_type(self):
-        return self.FILTER_LABEL_TO_TYPE.get(
-            self.filter_type_var.get(),
-            FILTER_BAD_COLOR,
-        )
-
     def _get_threshold(self):
         try:
             threshold = int(self.threshold_var.get())
         except ValueError as exc:
-            raise ScanProfileError("Tolerance must be a whole number from 0 to 255.") from exc
+            raise ScanProfileError(
+                "Color tolerance must be a whole number from 0 to 255."
+            ) from exc
         if not 0 <= threshold <= 255:
-            raise ScanProfileError("Tolerance must be between 0 and 255.")
+            raise ScanProfileError("Color tolerance must be between 0 and 255.")
         return threshold
 
     def _get_class_size_requirement(self):
@@ -1293,21 +1048,6 @@ class ScanProfilePanel:
             except ValueError as exc:
                 raise ScanProfileError(f"{label} must be a number of micrometers.") from exc
         return self.scan_profile.validate_size_requirement(*values)
-
-    def _get_intensity_range(self):
-        try:
-            minimum = float(self.minimum_intensity_var.get())
-            maximum = float(self.maximum_intensity_var.get())
-        except ValueError as exc:
-            raise ScanProfileError("Intensity limits must be numbers from 0 to 255.") from exc
-        return self.scan_profile.validate_intensity_range(minimum, maximum)
-
-    def _get_color_distance(self):
-        try:
-            value = float(self.color_distance_var.get())
-        except ValueError as exc:
-            raise ScanProfileError("Color distance must be a number.") from exc
-        return self.scan_profile.validate_color_distance(value)
 
     def _preview_pixel_size(self):
         magnification = str(self.app.get_magnification()).upper()
@@ -1342,7 +1082,7 @@ class ScanProfilePanel:
     def _show_select_region_again(self):
         messagebox.showwarning(
             "Select Region Again",
-            "The tolerance changed after the preview. Click inside the region again.",
+            "The color tolerance changed after the preview. Click inside the region again.",
         )
 
     def _find_similar_class(self, contrast_rgb, exclude_index=None):
@@ -1374,18 +1114,12 @@ class ScanProfilePanel:
         self.editor_kind = None
         self.selected_item = None
         self.editing_class_index = None
-        self.editing_filter_index = None
         self.pending_new_class = False
-        self.pending_new_filter = False
         self.class_name_var.set("")
         self.class_group_var.set("")
         self.identify_var.set(True)
         self.minimum_size_var.set("")
         self.maximum_size_var.set("")
-        self.filter_type_var.set(FILTER_TYPE_LABELS[FILTER_BAD_COLOR])
-        self.minimum_intensity_var.set(str(self.DEFAULT_INTENSITY_MINIMUM))
-        self.maximum_intensity_var.set(str(self.DEFAULT_INTENSITY_MAXIMUM))
-        self.color_distance_var.set(str(self.DEFAULT_COLOR_DISTANCE))
         self.threshold_var.set(str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
         self._set_item_editing_enabled(False)
         self._show_editor_options(None)
@@ -1457,13 +1191,13 @@ class ScanProfilePanel:
 
     @staticmethod
     def _show_confirm_current_message():
-        messagebox.showinfo("Confirm Item", "Confirm the current class or filter first.")
+        messagebox.showinfo("Confirm Class", "Confirm the current class first.")
 
     @staticmethod
     def _show_create_or_edit_item_prompt():
         messagebox.showinfo(
-            "Create or Edit Item",
-            "Create a new class or color filter, or edit an existing one first.",
+            "Create or Edit Class",
+            "Create a new class or edit an existing one first.",
         )
 
     def _schedule_footer_resize(self, *_):

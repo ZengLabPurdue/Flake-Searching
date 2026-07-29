@@ -396,7 +396,9 @@ def find_flakes(
         or not isinstance(region_flood_fill_threshold, (int, float))
         or not 0 <= region_flood_fill_threshold <= 255
     ):
-        raise ValueError("The region flood-fill threshold must be between 0 and 255.")
+        raise ValueError(
+            "The region flood-fill color threshold must be between 0 and 255."
+        )
 
     stats = {} if benchmark else None
     wall_started_at = perf_counter()
@@ -462,7 +464,6 @@ def find_flakes(
             if profile_path
             else {
                 "classes": [],
-                "filters": [],
                 "minimum_size_um": None,
                 "maximum_size_um": None,
             }
@@ -470,7 +471,6 @@ def find_flakes(
     if not isinstance(profile_configuration, dict):
         raise ValueError("Profile configuration must be an object.")
     profile_classes = profile_configuration["classes"]
-    profile_filters = profile_configuration.get("filters", [])
     class_colors = _timed_call(
         stats,
         "generate_class_colors",
@@ -498,7 +498,6 @@ def find_flakes(
         pixel_size_um,
         profile_configuration["minimum_size_um"],
         profile_configuration["maximum_size_um"],
-        profile_filters,
     )
     classified_without_legend = _timed_call(
         stats,
@@ -572,13 +571,10 @@ def find_flakes(
             "all_region_mask": classification["all_region_mask"],
             "region_overlap_count_map": classification["region_overlap_count_map"],
             "matched_region_mask": classification["matched_region_mask"],
-            "rejected_region_mask": classification["rejected_region_mask"],
-            "filtered_region_mask": classification["filtered_region_mask"],
             "class_index_map": classification["class_index_map"],
             "class_masks": classification["class_masks"],
             "class_overlap_count_map": classification["class_overlap_count_map"],
             "class_stack_order": [item["name"] for item in profile_classes],
-            "filter_order": [item["name"] for item in profile_filters],
             "legend_position": legend_position if draw_legend else None,
             "background_color_rgb": classification["background_color_rgb"],
             "region_flood_fill_threshold": region_flood_fill_threshold,

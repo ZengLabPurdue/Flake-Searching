@@ -16,19 +16,17 @@ from Scanning.region_classifier import (  # noqa: E402
     LEGEND_BOTTOM_RIGHT,
     LEGEND_TOP_LEFT,
     LEGEND_TOP_RIGHT,
+    _flood_fill_region,
     classify_contour_regions,
     combined_class_regions,
     draw_class_legend,
     draw_region_area_labels,
     load_profile_configuration,
     match_profile_class,
-    match_profile_filter,
 )
 from Scanning.contour_finder import find_flakes  # noqa: E402
+from Scanning.contour_extractor import get_region_from_point  # noqa: E402
 from Scanning.scan_profile import (  # noqa: E402
-    FILTER_BAD_COLOR,
-    FILTER_COLOR_DISTANCE,
-    FILTER_INTENSITY_RANGE,
     PROFILE_VERSION,
     ScanProfile,
 )
@@ -66,25 +64,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
         profile.classes.append(profile_class)
         return profile_class
 
-    def _add_color_filter(self, profile, filter_type=FILTER_BAD_COLOR):
-        image = np.full((8, 8, 3), 180, dtype=np.uint8)
-        mask = np.zeros((8, 8), dtype=np.uint8)
-        mask[2:6, 2:6] = 255
-        profile_filter = profile._make_filter(
-            profile._next_filter_name(),
-            filter_type,
-            source_path=Path("filter.png"),
-            image=image,
-            region_mask=mask,
-            seed_point=(3, 3),
-            threshold=5,
-            contrast=(10, 11, 12),
-            distance_threshold=20 if filter_type == FILTER_COLOR_DISTANCE else None,
-        )
-        profile.filters.append(profile_filter)
-        return profile_filter
-
-    def test_version_four_round_trip_persists_classes_filters_and_profile_options(self):
+    def test_version_five_round_trip_persists_classes_and_profile_options(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = ScanProfile(directory)
             profile.set_size_requirement(4, 90)
@@ -97,14 +77,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
                 minimum=8,
                 maximum=40,
             )
-            self._add_color_filter(profile)
-            profile.filters.append(profile._make_filter(
-                profile._next_filter_name(),
-                FILTER_INTENSITY_RANGE,
-                minimum_intensity=20,
-                maximum_intensity=50,
-            ))
-            self._add_color_filter(profile, FILTER_COLOR_DISTANCE)
 
             loaded = profile.save_profile("Options")
             payload = json.loads((loaded.path / "profile.json").read_text(encoding="utf-8"))
@@ -117,14 +89,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
             self.assertEqual(loaded.groups, ["hBN"])
             self.assertFalse(loaded.classes[0]["identify"])
             self.assertEqual(loaded.classes[0]["minimum_size_um"], 8.0)
-            self.assertEqual(
-                [item["name"] for item in loaded.filters],
-                ["Filter 1", "Filter 2", "Filter 3"],
-            )
-            self.assertEqual(
-                [item["type"] for item in loaded.filters],
-                [FILTER_BAD_COLOR, FILTER_INTENSITY_RANGE, FILTER_COLOR_DISTANCE],
-            )
 
     def test_version_two_profiles_default_to_identify(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,14 +102,12 @@ class ScanProfileOptionsTests(unittest.TestCase):
             for item in payload["classes"]:
                 item.pop("group", None)
                 item.pop("identify", None)
-                item.pop("reject", None)
             profile_path.write_text(json.dumps(payload), encoding="utf-8")
 
             loaded = ScanProfile(directory).load_profile(profile_path)
 
             self.assertEqual(loaded.classes[0]["group"], "")
             self.assertTrue(loaded.classes[0]["identify"])
-            self.assertEqual(loaded.filters, [])
 
     def test_copy_and_extend_make_independent_classes_with_provenance(self):
         source = ScanProfile()
@@ -161,11 +123,10 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
         destination = ScanProfile()
         self._add_class(destination, "Class A", (0, 0, 0))
-        added, added_filters = destination.extend_from_profile(source)
+        added = destination.extend_from_profile(source)
 
         self.assertEqual([item["name"] for item in added], ["Class A 2", "Class A copy"])
         self.assertTrue(all(item["derived_from"]["profile"] == "Source" for item in added))
-        self.assertEqual(added_filters, [])
 
     def test_saved_copy_provenance_points_to_the_stable_source_id(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,7 +144,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
                 payload["classes"][0]["id"],
             )
 
-    def test_filters_precede_identify_and_disabled_classes_are_ignored(self):
+    def test_disabled_classes_are_ignored(self):
         classes = [
             {
                 "name": "Nearest identify",
@@ -203,42 +164,9 @@ class ScanProfileOptionsTests(unittest.TestCase):
             },
         ]
 
-        filters = [{
-            "name": "Filter 1",
-            "type": FILTER_BAD_COLOR,
-            "contrast_rgb": np.asarray((14, 14, 14), dtype=float),
-            "tolerance": 10,
-        }]
-        filtered = match_profile_filter(np.asarray((12, 12, 12)), 12, filters)
-        match = None if filtered else match_profile_class(np.asarray((12, 12, 12)), classes)
+        match = match_profile_class(np.asarray((12, 12, 12)), classes)
 
-        self.assertEqual(filtered[1]["name"], "Filter 1")
-        self.assertIsNone(match)
-
-    def test_all_three_filter_types_match_their_documented_condition(self):
-        bad_color = [{
-            "name": "Filter 1",
-            "type": FILTER_BAD_COLOR,
-            "contrast_rgb": np.asarray((10, 10, 10), dtype=float),
-            "tolerance": 2,
-        }]
-        intensity = [{
-            "name": "Filter 2",
-            "type": FILTER_INTENSITY_RANGE,
-            "minimum_intensity": 40,
-            "maximum_intensity": 60,
-        }]
-        far_color = [{
-            "name": "Filter 3",
-            "type": FILTER_COLOR_DISTANCE,
-            "contrast_rgb": np.asarray((0, 0, 0), dtype=float),
-            "distance_threshold": 10,
-        }]
-
-        self.assertIsNotNone(match_profile_filter(np.asarray((11, 9, 10)), 100, bad_color))
-        self.assertIsNotNone(match_profile_filter(np.asarray((0, 0, 0)), 50, intensity))
-        self.assertIsNotNone(match_profile_filter(np.asarray((20, 0, 0)), 100, far_color))
-        self.assertIsNone(match_profile_filter(np.asarray((5, 0, 0)), 100, far_color))
+        self.assertEqual(match[1]["name"], "Nearest identify")
 
     def test_class_size_limits_are_applied_during_matching(self):
         classes = [
@@ -258,7 +186,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
             "Small",
         )
 
-    def test_matching_loader_reads_profile_size_groups_and_filters(self):
+    def test_matching_loader_reads_profile_size_and_groups(self):
         with tempfile.TemporaryDirectory() as directory:
             profile_path = Path(directory) / "profile.json"
             profile_path.write_text(
@@ -275,11 +203,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
                         "identify": True,
                         "size_requirement": None,
                     }],
-                    "filters": [{
-                        "name": "Filter 1",
-                        "type": FILTER_INTENSITY_RANGE,
-                        "intensity_range": {"minimum": 10, "maximum": 30},
-                    }],
                 }),
                 encoding="utf-8",
             )
@@ -289,30 +212,8 @@ class ScanProfileOptionsTests(unittest.TestCase):
             self.assertEqual(configuration["minimum_size_um"], 3.0)
             self.assertEqual(configuration["maximum_size_um"], 30.0)
             self.assertEqual(configuration["classes"][0]["group"], "Artifacts")
-            self.assertEqual(configuration["filters"][0]["name"], "Filter 1")
 
-    def test_version_three_reject_classes_migrate_to_automatic_filters(self):
-        with tempfile.TemporaryDirectory() as directory:
-            profile = ScanProfile(directory)
-            self._add_class(profile, "Old reject", (4, 5, 6), identify=False)
-            saved = profile.save_profile("Migration")
-            profile_path = saved.path / "profile.json"
-            payload = json.loads(profile_path.read_text(encoding="utf-8"))
-            payload["version"] = 3
-            payload.pop("filters", None)
-            payload["classes"][0]["reject"] = True
-            profile_path.write_text(json.dumps(payload), encoding="utf-8")
-
-            loaded = ScanProfile(directory).load_profile(profile_path)
-            configuration = load_profile_configuration(profile_path)
-
-            self.assertEqual(loaded.classes, [])
-            self.assertEqual(loaded.filters[0]["name"], "Filter 1")
-            self.assertEqual(loaded.filters[0]["type"], FILTER_BAD_COLOR)
-            self.assertEqual(configuration["classes"], [])
-            self.assertEqual(configuration["filters"][0]["type"], FILTER_BAD_COLOR)
-
-    def test_region_classification_filters_before_classes_and_applies_profile_size(self):
+    def test_region_classification_applies_profile_size(self):
         image = np.full((12, 12, 3), 100, dtype=np.uint8)
         image[2:10, 2:10] = 120
         contour = np.asarray([[[2, 2]], [[9, 2]], [[9, 9]], [[2, 9]]], dtype=np.int32)
@@ -328,28 +229,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
             "maximum_size_um": None,
             "display_color_rgb": (255, 0, 0),
         }
-        filters = [{
-            "name": "Filter 1",
-            "type": FILTER_BAD_COLOR,
-            "contrast_rgb": np.asarray((20, 20, 20), dtype=float),
-            "tolerance": 2,
-        }]
-
-        filter_stats = {}
-        filtered = classify_contour_regions(
-            image,
-            np.zeros((12, 12), dtype=np.uint8),
-            [contour],
-            hierarchy,
-            [contour],
-            [0],
-            {0: [0]},
-            [identify_class],
-            2,
-            benchmark_stats=filter_stats,
-            pixel_size_um=2,
-            profile_filters=filters,
-        )
         too_small = classify_contour_regions(
             image,
             np.zeros((12, 12), dtype=np.uint8),
@@ -362,17 +241,40 @@ class ScanProfileOptionsTests(unittest.TestCase):
             2,
             pixel_size_um=2,
             minimum_size_um=20,
-            profile_filters=filters,
         )
 
-        self.assertTrue(filtered["region_results"][0]["filtered"])
-        self.assertEqual(filtered["region_results"][0]["filtered_by"], "Filter 1")
-        self.assertIsNone(filtered["region_results"][0]["matched_class"])
-        self.assertNotIn("flood_fill_region", filter_stats)
-        self.assertEqual(filter_stats["measure_contour_colors"]["calls"], 1)
-        self.assertEqual(filter_stats["build_filtered_contour_mask"]["calls"], 1)
         self.assertFalse(too_small["region_results"][0]["inside_profile_size"])
-        self.assertFalse(too_small["region_results"][0]["filtered"])
+        self.assertIsNone(too_small["region_results"][0]["matched_class"])
+
+    def test_reference_and_runtime_flood_fill_are_color_connected(self):
+        image_rgb = np.zeros((4, 6, 3), dtype=np.uint8)
+        image_rgb[:, :3] = (150, 0, 0)
+        image_rgb[:, 3:] = (0, 76, 0)
+        gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+        self.assertTrue(np.all(gray == gray[0, 0]))
+
+        runtime_mask = _flood_fill_region(
+            image_rgb.copy(),
+            (1, 1),
+            np.ones(image_rgb.shape[:2], dtype=bool),
+            5,
+        )
+
+        self.assertTrue(np.all(runtime_mask[:, :3]))
+        self.assertFalse(np.any(runtime_mask[:, 3:]))
+
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        _, _, reference_mask, contour = get_region_from_point(
+            image_bgr,
+            (1, 1),
+            threshold=5,
+            connectivity=8,
+            min_area=0,
+        )
+
+        self.assertIsNotNone(contour)
+        self.assertTrue(np.all(reference_mask[:, :3] > 0))
+        self.assertFalse(np.any(reference_mask[:, 3:] > 0))
 
     def test_contour_colors_precede_flood_fill_and_exclude_nested_interiors(self):
         image = np.full((60, 60, 3), 100, dtype=np.uint8)
@@ -435,7 +337,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
         self.assertEqual(results_by_type["internal"]["matched_class"], "Inner")
         self.assertTrue(all(item["flood_filled"] for item in both["region_results"]))
         self.assertEqual(both_stats["measure_contour_colors"]["calls"], 1)
-        self.assertNotIn("build_filtered_contour_mask", both_stats)
         self.assertEqual(both_stats["flood_fill_region"]["calls"], 2)
 
         outer_only_stats = {}

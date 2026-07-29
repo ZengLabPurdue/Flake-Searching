@@ -56,10 +56,9 @@ def get_region_from_point(
     if not (0 <= seed_x < image_width and 0 <= seed_y < image_height):
         raise ValueError("The seed point is outside the image.")
 
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-
-    h, w = gray.shape
+    h, w = image_bgr.shape[:2]
     mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    color_tolerance = (threshold, threshold, threshold)
 
     flags = (
         connectivity
@@ -69,12 +68,12 @@ def get_region_from_point(
     )
 
     cv2.floodFill(
-        image=gray.copy(),
+        image=image_bgr.copy(),
         mask=mask,
         seedPoint=seed_point,
-        newVal=0,
-        loDiff=threshold,
-        upDiff=threshold,
+        newVal=(0, 0, 0),
+        loDiff=color_tolerance,
+        upDiff=color_tolerance,
         flags=flags,
     )
 

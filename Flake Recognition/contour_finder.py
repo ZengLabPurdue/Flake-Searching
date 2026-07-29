@@ -35,10 +35,16 @@ if str(APP_DIRECTORY) not in sys.path:
 
 from Scanning import contour_finder as _app_contour_finder  # noqa: E402
 from Scanning import region_classifier as _app_region_classifier  # noqa: E402
+from config import PIXEL_SIZE  # noqa: E402
+from Imaging import image_metadata  # noqa: E402
 
 
 APP_CONTOUR_IMPLEMENTATION_PATH = Path(_app_contour_finder.__file__).resolve()
 APP_CLASSIFIER_IMPLEMENTATION_PATH = Path(_app_region_classifier.__file__).resolve()
+GR_BASE_PROFILE_PATH = (
+    APP_DIRECTORY / "Profiles" / "Gr_Base_Profile" / "profile.json"
+)
+DEFAULT_GR_PIXEL_SIZE_UM = float(PIXEL_SIZE["10X"]["HIGH"])
 IDENTIFIED_POINT_COLOR = "#ff00ff"
 SUPPORTED_IMAGE_SUFFIXES = {
     ".bmp",
@@ -85,8 +91,6 @@ def _actual_point_colors(region_results) -> np.ndarray:
 
 
 def _region_category(region) -> str:
-    if region.get("filtered", False):
-        return "filtered"
     if region.get("matched_class") is not None:
         return "identified"
     return "unmatched"
@@ -118,13 +122,13 @@ def plot_contour_contrasts_3d(
 ):
     """Plot all classified regions in signed RGB-contrast space.
 
-    Unmatched circles and filtered X markers use each region's measured average
-    RGB color. Every class-identified region is a vivid magenta star, making
-    class membership visible without a plot legend. Hollow diamonds and squares
-    mark configured class and color-filter reference contrasts respectively.
+    Unmatched circles use each region's measured average RGB color. Every
+    class-identified region is a vivid magenta star, making class membership
+    visible without a plot legend. Hollow diamonds mark configured class
+    reference contrasts.
     """
     regions = list(region_results)
-    configuration = profile_configuration or {"classes": [], "filters": []}
+    configuration = profile_configuration or {"classes": []}
     contrasts = (
         np.asarray([region["contrast_rgb"] for region in regions], dtype=np.float64)
         if regions
@@ -141,10 +145,9 @@ def plot_contour_contrasts_3d(
     axis = figure.add_subplot(111, projection="3d")
     category_styles = {
         "unmatched": {"marker": "o", "size": 24, "linewidth": 0.35},
-        "filtered": {"marker": "X", "size": 62, "linewidth": 0.75},
         "identified": {"marker": "*", "size": 105, "linewidth": 0.9},
     }
-    for category in ("unmatched", "filtered", "identified"):
+    for category in ("unmatched", "identified"):
         selected = categories == category
         if not np.any(selected):
             continue
@@ -189,31 +192,6 @@ def plot_contour_contrasts_3d(
             label = f"{group} / {profile_class['name']}" if group else profile_class["name"]
             axis.text(contrast[0], contrast[1], contrast[2], f"  [C][I] {label}")
 
-    for profile_filter in configuration.get("filters", ()):
-        if "contrast_rgb" not in profile_filter:
-            continue
-        contrast = np.asarray(profile_filter["contrast_rgb"], dtype=np.float64)
-        reference_contrasts.append(contrast)
-        axis.scatter(
-            [contrast[0]],
-            [contrast[1]],
-            [contrast[2]],
-            marker="s",
-            s=105,
-            facecolors="none",
-            edgecolors="#555555",
-            linewidths=1.5,
-            depthshade=False,
-        )
-        if annotate_references:
-            axis.text(
-                contrast[0],
-                contrast[1],
-                contrast[2],
-                f"  [F] {profile_filter['name']}",
-                color="#444444",
-            )
-
     axis.scatter(
         [0],
         [0],
@@ -243,7 +221,7 @@ def plot_contour_contrasts_3d(
     axis.set_title(
         "Contour-region RGB contrasts\n"
         f"{len(regions):,} total | {counts['identified']:,} identified | "
-        f"{counts['filtered']:,} filtered | {counts['unmatched']:,} unmatched"
+        f"{counts['unmatched']:,} unmatched"
         f"{timing}\nMagenta stars are class-identified regions"
     )
     figure.tight_layout()
@@ -266,30 +244,22 @@ def print_region_summary(region_results) -> None:
         for region in regions
         if region.get("matched_class") is not None
     )
-    filters = Counter(
-        region["filtered_by"]
-        for region in regions
-        if region.get("filtered_by") is not None
-    )
     print("\nRegion summary")
     print("-" * 48)
     print(f"Total regions : {len(regions):,}")
     print(f"Identified    : {counts['identified']:,}")
-    print(f"Filtered      : {counts['filtered']:,}")
     print(f"Unmatched     : {counts['unmatched']:,}")
     for name, count in sorted(classes.items()):
         print(f"  [C][I] {name}: {count:,}")
-    for name, count in sorted(filters.items()):
-        print(f"  [F] {name}: {count:,}")
 
 
 def print_region_points(region_results) -> None:
     """Print every plotted point in a compact, copyable text format."""
-    print("\nindex  state       class/filter               contrast RGB       actual RGB")
+    print("\nindex  state       class                      contrast RGB       actual RGB")
     print("-" * 88)
     for index, region in enumerate(region_results, start=1):
         state = _region_category(region)
-        label = region.get("matched_class") or region.get("filtered_by") or "-"
+        label = region.get("matched_class") or "-"
         contrast = tuple(region["contrast_rgb"])
         actual = tuple(region["average_color_rgb"])
         print(
@@ -304,7 +274,7 @@ def benchmark_and_plot(
     *,
     edge_threshold=10,
     area_threshold=DEFAULT_AREA_THRESHOLD,
-    contrast_threshold=DEFAULT_CONTRAST_MATCH_THRESHOLD,
+    contrast_threshold=None,
     region_flood_fill_threshold=DEFAULT_REGION_FLOOD_FILL_THRESHOLD,
     pixel_size_um=None,
     legend_position=DEFAULT_LEGEND_POSITION,
@@ -333,7 +303,7 @@ def benchmark_and_plot(
             contrast_threshold,
         )
         if profile_path is not None
-        else {"classes": [], "filters": []}
+        else {"classes": []}
     )
     print_region_summary(details["region_results"])
     if print_points:
@@ -357,7 +327,7 @@ def _choose_image_path() -> Path | None:
     root.withdraw()
     try:
         selected = filedialog.askopenfilename(
-            title="Choose an Image to Benchmark",
+            title="Choose an Image for the 3D Contrast Plot",
             filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp"), ("All files", "*.*")],
         )
     finally:
@@ -365,8 +335,20 @@ def _choose_image_path() -> Path | None:
     return Path(selected) if selected else None
 
 
+def _pixel_size_for_image(image_path, override=None) -> float:
+    if override is not None:
+        return float(override)
+    metadata = image_metadata.read_png_metadata(image_path)
+    magnification = metadata.get("magnification", "").strip().upper()
+    resolution = metadata.get("resolution", "").strip().upper()
+    try:
+        return float(PIXEL_SIZE[magnification][resolution])
+    except KeyError:
+        return DEFAULT_GR_PIXEL_SIZE_UM
+
+
 def _argument_parser() -> argparse.ArgumentParser:
-    default_profile = Path(AN_TEST_PROFILE_PATH)
+    default_profile = GR_BASE_PROFILE_PATH
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark the App contour classifier and plot every region in "
@@ -383,14 +365,18 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--profile",
         type=Path,
         default=default_profile if default_profile.is_file() else None,
-        help="Profile JSON or profile directory (default: App/Profiles/An_Test).",
+        help=(
+            "Profile JSON or profile directory "
+            "(default: App/Profiles/Gr_Base_Profile)."
+        ),
     )
     parser.add_argument("--edge-threshold", type=float, default=10)
     parser.add_argument("--area-threshold", type=float, default=DEFAULT_AREA_THRESHOLD)
     parser.add_argument(
         "--contrast-threshold",
         type=float,
-        default=DEFAULT_CONTRAST_MATCH_THRESHOLD,
+        default=None,
+        help="Override every class tolerance instead of using the profile values.",
     )
     parser.add_argument(
         "--flood-threshold",
@@ -401,7 +387,10 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--pixel-size",
         type=float,
         default=None,
-        help="Micrometers per pixel, required by profiles with size limits.",
+        help=(
+            "Micrometers per pixel. When omitted, use PNG camera metadata or "
+            f"the Gr profile's 10X HIGH fallback ({DEFAULT_GR_PIXEL_SIZE_UM:g})."
+        ),
     )
     parser.add_argument(
         "--legend-position",
@@ -417,7 +406,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-reference-labels",
         action="store_true",
-        help="Hide class/filter names beside their reference markers.",
+        help="Hide class names beside their reference markers.",
     )
     parser.add_argument(
         "--print-points",
@@ -427,16 +416,43 @@ def _argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Previous single-image ``main`` is intentionally disabled while the directory
-# benchmark is active. ``benchmark_and_plot`` remains available for interactive
-# single-image experiments.
-#
-# def main(argv=None) -> int:
-#     arguments = _argument_parser().parse_args(argv)
-#     image_path = arguments.image or _choose_image_path()
-#     ...
-#     benchmark_and_plot(image_bgr, profile_path, ...)
-#     return 0
+def main(argv=None) -> int:
+    arguments = _argument_parser().parse_args(argv)
+    image_path = arguments.image or _choose_image_path()
+    if image_path is None:
+        print("No image selected.")
+        return 1
+    image_path = image_path.resolve()
+    profile_path = arguments.profile
+    if profile_path is not None:
+        profile_path = profile_path.resolve()
+        if not profile_path.exists():
+            raise FileNotFoundError(f"Profile was not found: {profile_path}")
+
+    pixel_size_um = _pixel_size_for_image(image_path, arguments.pixel_size)
+    print(f"Contour implementation   : {APP_CONTOUR_IMPLEMENTATION_PATH}")
+    print(f"Classifier implementation: {APP_CLASSIFIER_IMPLEMENTATION_PATH}")
+    print(f"Image                    : {image_path}")
+    print(f"Profile                  : {profile_path if profile_path else 'none'}")
+    print(f"Pixel size               : {pixel_size_um:g} um/pixel")
+    image_bgr = read_image_bgr(image_path)
+    print(f"Image dimensions         : {image_bgr.shape[1]} x {image_bgr.shape[0]}")
+
+    benchmark_and_plot(
+        image_bgr,
+        profile_path,
+        edge_threshold=arguments.edge_threshold,
+        area_threshold=arguments.area_threshold,
+        contrast_threshold=arguments.contrast_threshold,
+        region_flood_fill_threshold=arguments.flood_threshold,
+        pixel_size_um=pixel_size_um,
+        legend_position=arguments.legend_position,
+        display=not arguments.no_show,
+        save_plot=arguments.save_plot,
+        annotate_references=not arguments.no_reference_labels,
+        print_points=arguments.print_points,
+    )
+    return 0
 
 
 def _choose_directory_path() -> Path | None:
@@ -455,7 +471,7 @@ def _choose_directory_path() -> Path | None:
 
 
 def _directory_argument_parser() -> argparse.ArgumentParser:
-    default_profile = Path(AN_TEST_PROFILE_PATH)
+    default_profile = GR_BASE_PROFILE_PATH
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark the production contour classifier over every supported "
@@ -472,7 +488,10 @@ def _directory_argument_parser() -> argparse.ArgumentParser:
         "--profile",
         type=Path,
         default=default_profile if default_profile.is_file() else None,
-        help="Profile JSON or profile directory (default: App/Profiles/An_Test).",
+        help=(
+            "Profile JSON or profile directory "
+            "(default: App/Profiles/Gr_Base_Profile)."
+        ),
     )
     parser.add_argument(
         "--recursive",
@@ -488,7 +507,8 @@ def _directory_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--contrast-threshold",
         type=float,
-        default=DEFAULT_CONTRAST_MATCH_THRESHOLD,
+        default=None,
+        help="Override every class tolerance instead of using the profile values.",
     )
     parser.add_argument(
         "--flood-threshold",
@@ -498,8 +518,8 @@ def _directory_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pixel-size",
         type=float,
-        default=None,
-        help="Micrometers per pixel, required by profiles with size limits.",
+        default=DEFAULT_GR_PIXEL_SIZE_UM,
+        help="Micrometers per pixel (default: Gr profile 10X HIGH calibration).",
     )
     return parser
 
@@ -560,7 +580,7 @@ def benchmark_directory(
     recursive=False,
     edge_threshold=10,
     area_threshold=DEFAULT_AREA_THRESHOLD,
-    contrast_threshold=DEFAULT_CONTRAST_MATCH_THRESHOLD,
+    contrast_threshold=None,
     region_flood_fill_threshold=DEFAULT_REGION_FLOOD_FILL_THRESHOLD,
     pixel_size_um=None,
 ) -> int:
@@ -589,7 +609,6 @@ def benchmark_directory(
     failed = 0
     total_regions = 0
     total_identified = 0
-    total_filtered = 0
     batch_started_at = perf_counter()
 
     for index, image_path in enumerate(image_paths, start=1):
@@ -619,18 +638,16 @@ def benchmark_directory(
             identified = sum(
                 region["matched_class"] is not None for region in regions
             )
-            filtered = sum(region.get("filtered", False) for region in regions)
             pipeline_seconds = benchmark["wall_time_seconds"]
             _merge_benchmark(aggregate, benchmark)
             combined_pipeline_seconds += pipeline_seconds
             successful += 1
             total_regions += len(regions)
             total_identified += identified
-            total_filtered += filtered
             print(
                 f"{prefix} Completed {relative_path} | "
                 f"{pipeline_seconds:.3f} s | {len(regions):,} regions | "
-                f"{identified:,} identified | {filtered:,} filtered",
+                f"{identified:,} identified",
                 flush=True,
             )
         except Exception as exc:  # Continue benchmarking the remaining images.
@@ -649,12 +666,11 @@ def benchmark_directory(
     print(f"Failed images     : {failed:,}")
     print(f"Total regions     : {total_regions:,}")
     print(f"Identified regions: {total_identified:,}")
-    print(f"Filtered regions  : {total_filtered:,}")
     print(f"Batch elapsed time: {batch_seconds:.3f} s")
     return 0 if successful and not failed else 1
 
 
-def main(argv=None) -> int:
+def directory_main(argv=None) -> int:
     arguments = _directory_argument_parser().parse_args(argv)
     directory = arguments.directory or _choose_directory_path()
     if directory is None:
@@ -675,12 +691,15 @@ def main(argv=None) -> int:
 __all__ = _APP_EXPORTS + [
     "APP_CONTOUR_IMPLEMENTATION_PATH",
     "APP_CLASSIFIER_IMPLEMENTATION_PATH",
+    "GR_BASE_PROFILE_PATH",
+    "DEFAULT_GR_PIXEL_SIZE_UM",
     "read_image_bgr",
     "plot_contour_contrasts_3d",
     "print_region_summary",
     "print_region_points",
     "benchmark_and_plot",
     "benchmark_directory",
+    "directory_main",
     "main",
 ]
 

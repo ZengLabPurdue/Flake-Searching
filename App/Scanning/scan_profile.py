@@ -15,26 +15,11 @@ from .contour_extractor import get_region_from_point
 
 
 PROFILE_SCHEMA = "flake-search.scan-search-profile"
-PROFILE_VERSION = 4
-SUPPORTED_PROFILE_VERSIONS = {1, 2, 3, PROFILE_VERSION}
+PROFILE_VERSION = 5
+SUPPORTED_PROFILE_VERSIONS = {1, 2, 3, 4, PROFILE_VERSION}
 PROFILE_FILENAME = "profile.json"
 DEFAULT_PROFILES_DIR = HOME_DIR / "Profiles"
 ScanProfileError = ValueError
-
-FILTER_BAD_COLOR = "bad_color"
-FILTER_INTENSITY_RANGE = "intensity_range"
-FILTER_COLOR_DISTANCE = "color_distance"
-FILTER_TYPES = {
-    FILTER_BAD_COLOR,
-    FILTER_INTENSITY_RANGE,
-    FILTER_COLOR_DISTANCE,
-}
-FILTER_TYPE_LABELS = {
-    FILTER_BAD_COLOR: "Matches a bad color",
-    FILTER_INTENSITY_RANGE: "Bad intensity range",
-    FILTER_COLOR_DISTANCE: "Too far from a color",
-}
-
 
 def _profile_slug(name):
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
@@ -103,7 +88,6 @@ class ScanProfile:
         self.minimum_size_um = None
         self.maximum_size_um = None
         self.classes = []
-        self.filters = []
 
     def profile_directory(self, name):
         return self.profiles_dir / _profile_slug(name)
@@ -197,7 +181,7 @@ class ScanProfile:
         return copied
 
     def extend_from_profile(self, source_profile):
-        """Append independent copies of every class and filter in another profile."""
+        """Append independent copies of every class in another profile."""
         added = []
         for source in source_profile.classes:
             copied_name = self._unique_class_name(source["name"])
@@ -222,104 +206,7 @@ class ScanProfile:
             )
             self.classes.append(copied)
             added.append(copied)
-        added_filters = []
-        for source_filter in source_profile.filters:
-            copied = self._copy_filter_data(
-                source_filter,
-                self._next_filter_name(),
-                source_profile.name,
-            )
-            self.filters.append(copied)
-            added_filters.append(copied)
-        return added, added_filters
-
-    def find_filter(self, name):
-        name = name.strip().casefold()
-        for index, profile_filter in enumerate(self.filters):
-            if profile_filter["name"].casefold() == name:
-                return index
-        return None
-
-    def get_filter(self, index):
-        return self.filters[index]
-
-    def set_filter(
-        self,
-        filter_type,
-        *,
-        source_path=None,
-        image_bgr=None,
-        region_mask=None,
-        seed_point=None,
-        threshold=15,
-        connectivity=8,
-        minimum_intensity=None,
-        maximum_intensity=None,
-        distance_threshold=None,
-        index=None,
-        derived_from=None,
-    ):
-        name = self._next_filter_name() if index is None else self.filters[index]["name"]
-        filter_id = None if index is None else self.filters[index]["id"]
-        if index is not None and derived_from is None:
-            derived_from = self.filters[index].get("derived_from")
-        profile_filter = self._make_filter(
-            name,
-            filter_type,
-            source_path=source_path,
-            image=image_bgr,
-            region_mask=region_mask,
-            seed_point=seed_point,
-            threshold=threshold,
-            connectivity=connectivity,
-            minimum_intensity=minimum_intensity,
-            maximum_intensity=maximum_intensity,
-            distance_threshold=distance_threshold,
-            filter_id=filter_id,
-            derived_from=derived_from,
-        )
-        if index is None:
-            self.filters.append(profile_filter)
-        else:
-            self.filters[index] = profile_filter
-        return profile_filter
-
-    def copy_filter(self, index):
-        source = self.get_filter(index)
-        copied = self._copy_filter_data(source, self._next_filter_name(), self.name)
-        self.filters.append(copied)
-        return copied
-
-    def _copy_filter_data(self, source, name, source_profile_name=None):
-        origin = {
-            "profile": source_profile_name or None,
-            "filter_id": source["id"],
-        }
-        return self._make_filter(
-            name,
-            source["type"],
-            source_path=source.get("source_path"),
-            image=(
-                source["image_bgr"].copy()
-                if source.get("image_bgr") is not None
-                else None
-            ),
-            region_mask=(
-                source["region_mask"].copy()
-                if source.get("region_mask") is not None
-                else None
-            ),
-            seed_point=source.get("seed_point"),
-            threshold=source.get("threshold", 15),
-            connectivity=source.get("connectivity", 8),
-            minimum_intensity=source.get("minimum_intensity"),
-            maximum_intensity=source.get("maximum_intensity"),
-            distance_threshold=source.get("distance_threshold"),
-            derived_from=origin,
-        )
-
-    def remove_filter(self, index):
-        return self.filters.pop(index)
+        return added
 
     def matching_configuration(self, contrast_threshold=None):
         """Build classifier input directly from the editable in-memory profile."""
@@ -340,28 +227,8 @@ class ScanProfile:
                 "minimum_size_um": profile_class["minimum_size_um"],
                 "maximum_size_um": profile_class["maximum_size_um"],
             })
-        filters = []
-        for profile_filter in self.filters:
-            item = {
-                "name": profile_filter["name"],
-                "type": profile_filter["type"],
-            }
-            if profile_filter["contrast_rgb"] is not None:
-                item["contrast_rgb"] = np.asarray(
-                    profile_filter["contrast_rgb"],
-                    dtype=np.float64,
-                )
-            if profile_filter["type"] == FILTER_BAD_COLOR:
-                item["tolerance"] = float(profile_filter["threshold"])
-            elif profile_filter["type"] == FILTER_INTENSITY_RANGE:
-                item["minimum_intensity"] = profile_filter["minimum_intensity"]
-                item["maximum_intensity"] = profile_filter["maximum_intensity"]
-            else:
-                item["distance_threshold"] = profile_filter["distance_threshold"]
-            filters.append(item)
         return {
             "classes": classes,
-            "filters": filters,
             "minimum_size_um": self.minimum_size_um,
             "maximum_size_um": self.maximum_size_um,
         }
@@ -385,16 +252,14 @@ class ScanProfile:
         name = (self.name if name is None else name).strip()
         if not name:
             raise ScanProfileError("Enter a profile name before saving.")
-        if not self.classes and not self.filters:
-            raise ScanProfileError("Add at least one confirmed class or filter before saving.")
+        if not self.classes:
+            raise ScanProfileError("Add at least one confirmed class before saving.")
 
         names = [profile_class["name"].casefold() for profile_class in self.classes]
         if len(names) != len(set(names)):
             raise ScanProfileError("Class names must be unique.")
         for profile_class in self.classes:
             self._validate_class(profile_class)
-        for profile_filter in self.filters:
-            self._validate_filter(profile_filter)
 
         profile_minimum, profile_maximum = self.validate_size_requirement(
             self.minimum_size_um,
@@ -443,44 +308,6 @@ class ScanProfile:
             if profile_class["derived_from"] is not None:
                 saved_classes[-1]["derived_from"] = profile_class["derived_from"]
 
-        saved_filters = []
-        for profile_filter in self.filters:
-            saved_filter = {
-                "id": profile_filter["id"],
-                "name": profile_filter["name"],
-                "type": profile_filter["type"],
-            }
-            if profile_filter["type"] in (FILTER_BAD_COLOR, FILTER_COLOR_DISTANCE):
-                filter_id = profile_filter["id"]
-                filename = f"{_profile_slug(profile_filter['name'])}_{filter_id[:8]}_source.png"
-                source_path = images_dir / filename
-                _write_image(source_path, profile_filter["image_bgr"])
-                red, green, blue = profile_filter["contrast_rgb"]
-                saved_filter.update({
-                    "source_image": f"images/{filename}",
-                    "seed_point": {
-                        "x": profile_filter["seed_point"][0],
-                        "y": profile_filter["seed_point"][1],
-                    },
-                    "flood_fill": {
-                        "threshold": profile_filter["threshold"],
-                        "connectivity": profile_filter["connectivity"],
-                    },
-                    "contrast_rgb": {"red": red, "green": green, "blue": blue},
-                })
-                if profile_filter["type"] == FILTER_COLOR_DISTANCE:
-                    saved_filter["distance_threshold"] = profile_filter[
-                        "distance_threshold"
-                    ]
-            else:
-                saved_filter["intensity_range"] = {
-                    "minimum": profile_filter["minimum_intensity"],
-                    "maximum": profile_filter["maximum_intensity"],
-                }
-            if profile_filter["derived_from"] is not None:
-                saved_filter["derived_from"] = profile_filter["derived_from"]
-            saved_filters.append(saved_filter)
-
         now = datetime.now(timezone.utc).isoformat()
         payload = {
             "schema": PROFILE_SCHEMA,
@@ -497,7 +324,6 @@ class ScanProfile:
                 else None
             ),
             "classes": saved_classes,
-            "filters": saved_filters,
         }
         (destination / PROFILE_FILENAME).write_text(
             json.dumps(payload, indent=2) + "\n",
@@ -524,18 +350,16 @@ class ScanProfile:
 
         name = payload.get("name")
         saved_classes = payload.get("classes")
-        saved_filters = payload.get("filters", [])
         if not isinstance(name, str) or not name.strip():
             raise ScanProfileError("The profile name is missing.")
-        if not isinstance(saved_classes, list) or not isinstance(saved_filters, list):
-            raise ScanProfileError("The profile class and filter lists must be arrays.")
-        if not saved_classes and not saved_filters:
-            raise ScanProfileError("The profile must contain at least one class or filter.")
+        if not isinstance(saved_classes, list):
+            raise ScanProfileError("The profile class list must be an array.")
+        if not saved_classes:
+            raise ScanProfileError("The profile must contain at least one class.")
 
         profile_dir = profile_path.parent.resolve()
         profile_size = self._read_size(payload.get("size_requirement"))
         loaded_classes = []
-        loaded_filters = []
 
         for index, saved_class in enumerate(saved_classes, start=1):
             if not isinstance(saved_class, dict):
@@ -596,122 +420,21 @@ class ScanProfile:
                 contrast = None
 
             identify = saved_class.get("identify", True)
-            legacy_reject = profile_version == 3 and saved_class.get("reject", False)
-            if not legacy_reject or identify:
-                loaded_classes.append(self._make_class(
-                    class_name,
-                    source_path,
-                    image,
-                    region_mask,
-                    seed_point,
-                    threshold,
-                    connectivity,
-                    size[0],
-                    size[1],
-                    saved_class.get("id"),
-                    contrast,
-                    group=saved_class.get("group", ""),
-                    identify=identify,
-                    derived_from=saved_class.get("derived_from"),
-                ))
-            if legacy_reject:
-                loaded_filters.append(self._make_filter(
-                    f"Filter {len(loaded_filters) + 1}",
-                    FILTER_BAD_COLOR,
-                    source_path=source_path,
-                    image=image,
-                    region_mask=region_mask,
-                    seed_point=seed_point,
-                    threshold=threshold,
-                    connectivity=connectivity,
-                    contrast=contrast,
-                    derived_from={
-                        "profile": name.strip(),
-                        "class_id": saved_class.get("id"),
-                    },
-                ))
-
-        for index, saved_filter in enumerate(saved_filters, start=1):
-            if not isinstance(saved_filter, dict):
-                raise ScanProfileError(f"Filter {index} must be a JSON object.")
-            filter_name = saved_filter.get("name")
-            filter_type = saved_filter.get("type")
-            if not isinstance(filter_name, str) or not filter_name.strip():
-                raise ScanProfileError(f"Filter {index} has no name.")
-
-            common = {
-                "filter_id": saved_filter.get("id"),
-                "derived_from": saved_filter.get("derived_from"),
-            }
-            if filter_type == FILTER_INTENSITY_RANGE:
-                intensity_range = saved_filter.get("intensity_range")
-                if not isinstance(intensity_range, dict):
-                    raise ScanProfileError(
-                        f"Filter {filter_name} has an invalid intensity range."
-                    )
-                loaded_filters.append(self._make_filter(
-                    filter_name,
-                    filter_type,
-                    minimum_intensity=intensity_range.get("minimum"),
-                    maximum_intensity=intensity_range.get("maximum"),
-                    **common,
-                ))
-                continue
-
-            seed = saved_filter.get("seed_point")
-            flood_fill = saved_filter.get("flood_fill")
-            contrast = saved_filter.get("contrast_rgb")
-            if not isinstance(seed, dict) or not isinstance(flood_fill, dict):
-                raise ScanProfileError(
-                    f"Filter {filter_name} is missing region metadata."
-                )
-            if isinstance(contrast, dict):
-                contrast = (
-                    contrast.get("red"),
-                    contrast.get("green"),
-                    contrast.get("blue"),
-                )
-            try:
-                seed_point = (int(seed["x"]), int(seed["y"]))
-                threshold = int(flood_fill["threshold"])
-                connectivity = int(flood_fill["connectivity"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ScanProfileError(
-                    f"Filter {filter_name} has invalid region metadata."
-                ) from exc
-            source_path = self._asset_path(
-                profile_dir,
-                saved_filter.get("source_image"),
-                f"filter {index}",
-            )
-            if not image_metadata.is_vignette_corrected(source_path):
-                raise ScanProfileError(
-                    f"Filter {filter_name} does not use a vignette-corrected PNG image."
-                )
-            image = _read_image(source_path)
-            if image is None:
-                raise ScanProfileError(
-                    f"Could not read source image for filter {filter_name}."
-                )
-            region_mask = self._region_mask(
+            loaded_classes.append(self._make_class(
+                class_name,
+                source_path,
                 image,
+                region_mask,
                 seed_point,
                 threshold,
                 connectivity,
-                filter_name,
-            )
-            loaded_filters.append(self._make_filter(
-                filter_name,
-                filter_type,
-                source_path=source_path,
-                image=image,
-                region_mask=region_mask,
-                seed_point=seed_point,
-                threshold=threshold,
-                connectivity=connectivity,
-                distance_threshold=saved_filter.get("distance_threshold"),
-                contrast=contrast,
-                **common,
+                size[0],
+                size[1],
+                saved_class.get("id"),
+                contrast,
+                group=saved_class.get("group", ""),
+                identify=identify,
+                derived_from=saved_class.get("derived_from"),
             ))
 
         class_names = [profile_class["name"].casefold() for profile_class in loaded_classes]
@@ -724,7 +447,6 @@ class ScanProfile:
         self.updated_at = str(payload.get("updated_at", ""))
         self.minimum_size_um, self.maximum_size_um = profile_size
         self.classes = loaded_classes
-        self.filters = loaded_filters
         return self
 
     def validate_size_requirement(self, minimum, maximum):
@@ -809,83 +531,6 @@ class ScanProfile:
             )
         return profile_class
 
-    def _make_filter(
-        self,
-        name,
-        filter_type,
-        *,
-        source_path=None,
-        image=None,
-        region_mask=None,
-        seed_point=None,
-        threshold=15,
-        connectivity=8,
-        minimum_intensity=None,
-        maximum_intensity=None,
-        distance_threshold=None,
-        filter_id=None,
-        contrast=None,
-        derived_from=None,
-    ):
-        if filter_type not in FILTER_TYPES:
-            raise ScanProfileError(f"Unknown filter type: {filter_type!r}.")
-        if filter_id is not None and (
-            not isinstance(filter_id, str) or not filter_id.strip()
-        ):
-            raise ScanProfileError("Filter ID must be non-empty text.")
-        profile_filter = {
-            "id": filter_id or uuid4().hex,
-            "name": str(name).strip(),
-            "type": filter_type,
-            "source_path": Path(source_path) if source_path is not None else None,
-            "image_bgr": (
-                np.ascontiguousarray(image) if image is not None else None
-            ),
-            "region_mask": (
-                np.ascontiguousarray(region_mask)
-                if region_mask is not None
-                else None
-            ),
-            "seed_point": (
-                (int(seed_point[0]), int(seed_point[1]))
-                if seed_point is not None
-                else None
-            ),
-            "threshold": int(threshold),
-            "connectivity": int(connectivity),
-            "contrast_rgb": contrast,
-            "minimum_intensity": minimum_intensity,
-            "maximum_intensity": maximum_intensity,
-            "distance_threshold": distance_threshold,
-            "derived_from": self._validate_derived_from(derived_from),
-        }
-        if filter_type in (FILTER_BAD_COLOR, FILTER_COLOR_DISTANCE):
-            if contrast is None:
-                try:
-                    contrast = region_contrast_rgb(image, region_mask)
-                except (TypeError, ValueError) as exc:
-                    raise ScanProfileError(
-                        f"Could not determine the reference color for {name}."
-                    ) from exc
-            profile_filter["contrast_rgb"] = self._validate_contrast(
-                contrast,
-                f"Filter {name}",
-            )
-        if filter_type == FILTER_INTENSITY_RANGE:
-            (
-                profile_filter["minimum_intensity"],
-                profile_filter["maximum_intensity"],
-            ) = self.validate_intensity_range(
-                minimum_intensity,
-                maximum_intensity,
-            )
-        if filter_type == FILTER_COLOR_DISTANCE:
-            profile_filter["distance_threshold"] = self.validate_color_distance(
-                distance_threshold
-            )
-        self._validate_filter(profile_filter)
-        return profile_filter
-
     def _validate_class(self, profile_class):
         name = profile_class["name"]
         image = profile_class["image_bgr"]
@@ -910,72 +555,6 @@ class ScanProfile:
             raise ScanProfileError(f"Class {name!r} has an invalid seed point.")
         if mask[seed_y, seed_x] == 0:
             raise ScanProfileError(f"Class {name!r} does not contain its seed point.")
-
-    def _validate_filter(self, profile_filter):
-        name = profile_filter.get("name")
-        filter_type = profile_filter.get("type")
-        if not isinstance(name, str) or not name.strip():
-            raise ScanProfileError("Every filter must have a name.")
-        if filter_type not in FILTER_TYPES:
-            raise ScanProfileError(f"Filter {name!r} has an invalid type.")
-        self._validate_derived_from(profile_filter.get("derived_from"))
-        if filter_type == FILTER_INTENSITY_RANGE:
-            self.validate_intensity_range(
-                profile_filter.get("minimum_intensity"),
-                profile_filter.get("maximum_intensity"),
-            )
-            return
-
-        image = profile_filter.get("image_bgr")
-        mask = profile_filter.get("region_mask")
-        seed_point = profile_filter.get("seed_point")
-        if image is None or image.ndim != 3 or image.shape[2] != 3:
-            raise ScanProfileError(f"Filter {name!r} has an invalid source image.")
-        if mask is None or mask.shape != image.shape[:2] or not np.any(mask > 0):
-            raise ScanProfileError(f"Filter {name!r} has an invalid region mask.")
-        if profile_filter.get("connectivity") not in (4, 8):
-            raise ScanProfileError("Flood-fill connectivity must be 4 or 8.")
-        threshold = profile_filter.get("threshold")
-        if not isinstance(threshold, int) or not 0 <= threshold <= 255:
-            raise ScanProfileError("Filter tolerance must be between 0 and 255.")
-        if seed_point is None:
-            raise ScanProfileError(f"Filter {name!r} has no seed point.")
-        seed_x, seed_y = seed_point
-        height, width = image.shape[:2]
-        if not (0 <= seed_x < width and 0 <= seed_y < height):
-            raise ScanProfileError(f"Filter {name!r} has an invalid seed point.")
-        if mask[seed_y, seed_x] == 0:
-            raise ScanProfileError(f"Filter {name!r} does not contain its seed point.")
-        self._validate_contrast(profile_filter.get("contrast_rgb"), f"Filter {name}")
-        if filter_type == FILTER_COLOR_DISTANCE:
-            self.validate_color_distance(profile_filter.get("distance_threshold"))
-
-    def validate_intensity_range(self, minimum, maximum):
-        values = []
-        for label, value in (("Minimum intensity", minimum), ("Maximum intensity", maximum)):
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not np.isfinite(value)
-                or not 0 <= value <= 255
-            ):
-                raise ScanProfileError(f"{label} must be between 0 and 255.")
-            values.append(float(value))
-        minimum, maximum = values
-        if minimum > maximum:
-            raise ScanProfileError("Minimum intensity cannot exceed maximum intensity.")
-        return minimum, maximum
-
-    @staticmethod
-    def validate_color_distance(value):
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not np.isfinite(value)
-            or value < 0
-        ):
-            raise ScanProfileError("Color distance must be zero or greater.")
-        return float(value)
 
     @staticmethod
     def _validate_contrast(contrast, label):
@@ -1030,12 +609,6 @@ class ScanProfile:
             suffix += 1
         return f"{preferred_name} {suffix}"
 
-    def _next_filter_name(self):
-        number = 1
-        while self.find_filter(f"Filter {number}") is not None:
-            number += 1
-        return f"Filter {number}"
-
     @staticmethod
     def _validate_group(group):
         if group is None:
@@ -1058,18 +631,13 @@ class ScanProfile:
             raise ScanProfileError("Class copy metadata must be an object or null.")
         profile = value.get("profile")
         class_id = value.get("class_id")
-        filter_id = value.get("filter_id")
         if profile is not None and not isinstance(profile, str):
             raise ScanProfileError("Copied class profile must be text or null.")
         if class_id is not None and not isinstance(class_id, str):
             raise ScanProfileError("Copied class ID must be text or null.")
-        if filter_id is not None and not isinstance(filter_id, str):
-            raise ScanProfileError("Copied filter ID must be text or null.")
         result = {"profile": profile}
         if class_id is not None:
             result["class_id"] = class_id
-        if filter_id is not None:
-            result["filter_id"] = filter_id
         return result
 
     def _asset_path(self, profile_dir, relative_path, item_label):
