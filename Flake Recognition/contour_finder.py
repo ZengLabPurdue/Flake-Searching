@@ -111,6 +111,28 @@ def _set_equal_contrast_limits(axis, contrast_sets) -> None:
     axis.set_box_aspect((1, 1, 1))
 
 
+def _plot_contrast_range_box(axis, minimum, maximum) -> np.ndarray:
+    """Draw the inclusive RGB contrast volume and return its eight corners."""
+    corners = np.asarray([
+        (red, green, blue)
+        for red in (minimum[0], maximum[0])
+        for green in (minimum[1], maximum[1])
+        for blue in (minimum[2], maximum[2])
+    ], dtype=np.float64)
+    for first in range(len(corners)):
+        for second in range(first + 1, len(corners)):
+            if np.count_nonzero(corners[first] != corners[second]) == 1:
+                axis.plot(
+                    corners[[first, second], 0],
+                    corners[[first, second], 1],
+                    corners[[first, second], 2],
+                    color="black",
+                    linewidth=1.0,
+                    alpha=0.55,
+                )
+    return corners
+
+
 def plot_contour_contrasts_3d(
     region_results,
     profile_configuration=None,
@@ -124,8 +146,8 @@ def plot_contour_contrasts_3d(
 
     Unmatched circles use each region's measured average RGB color. Every
     class-identified region is a vivid magenta star, making class membership
-    visible without a plot legend. Hollow diamonds mark configured class
-    reference contrasts.
+    visible without a plot legend. Hollow diamonds mark sampled class
+    references, while wireframe boxes show contrast range classes.
     """
     regions = list(region_results)
     configuration = profile_configuration or {"classes": []}
@@ -174,23 +196,55 @@ def plot_contour_contrasts_3d(
     for profile_class in configuration.get("classes", ()):
         if not profile_class.get("identify", True):
             continue
-        contrast = np.asarray(profile_class["contrast_rgb"], dtype=np.float64)
-        reference_contrasts.append(contrast)
-        axis.scatter(
-            [contrast[0]],
-            [contrast[1]],
-            [contrast[2]],
-            marker="D",
-            s=115,
-            facecolors="none",
-            edgecolors="black",
-            linewidths=1.5,
-            depthshade=False,
-        )
+        classification_type = profile_class.get("classification_type", "sample")
+        if classification_type == "range":
+            minimum = np.asarray(
+                profile_class["minimum_contrast_rgb"],
+                dtype=np.float64,
+            )
+            maximum = np.asarray(
+                profile_class["maximum_contrast_rgb"],
+                dtype=np.float64,
+            )
+            corners = _plot_contrast_range_box(axis, minimum, maximum)
+            reference_contrasts.extend(corners)
+            contrast = (minimum + maximum) / 2.0
+            axis.scatter(
+                [contrast[0]],
+                [contrast[1]],
+                [contrast[2]],
+                marker="s",
+                s=90,
+                facecolors="none",
+                edgecolors="black",
+                linewidths=1.3,
+                depthshade=False,
+            )
+            annotation_tag = "[R][I]"
+        else:
+            contrast = np.asarray(profile_class["contrast_rgb"], dtype=np.float64)
+            reference_contrasts.append(contrast)
+            axis.scatter(
+                [contrast[0]],
+                [contrast[1]],
+                [contrast[2]],
+                marker="D",
+                s=115,
+                facecolors="none",
+                edgecolors="black",
+                linewidths=1.5,
+                depthshade=False,
+            )
+            annotation_tag = "[S][I]"
         if annotate_references:
             group = profile_class.get("group")
             label = f"{group} / {profile_class['name']}" if group else profile_class["name"]
-            axis.text(contrast[0], contrast[1], contrast[2], f"  [C][I] {label}")
+            axis.text(
+                contrast[0],
+                contrast[1],
+                contrast[2],
+                f"  {annotation_tag} {label}",
+            )
 
     axis.scatter(
         [0],

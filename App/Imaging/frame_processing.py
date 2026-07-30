@@ -14,6 +14,7 @@ from . import amcam
 from . import chip_edge_classifier
 from . import image_metadata
 from . import vignetting_corrector
+from .flatfield_storage import vignette_filter_path
 
 class FrameProcessor:
     def __init__(
@@ -546,9 +547,10 @@ class FrameProcessor:
         return frame[y1:y2, x1:x2]
 
     def get_vignette_filter_path(self):
-        magnification = self.app.get_magnification().lower()
-        resolution = self.app.get_resolution().lower()
-        return HOME_DIR / "Flatfields" / f"vignette_filter_{magnification}_{resolution}.png"
+        return vignette_filter_path(
+            self.app.get_magnification(),
+            self.app.get_resolution(),
+        )
 
     def load_vignette_filter(self, image_shape=None):
         key = (self.app.get_magnification(), self.app.get_resolution())

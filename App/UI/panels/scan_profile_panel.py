@@ -13,6 +13,8 @@ from Scanning import contour_finder
 from Scanning.contour_extractor import get_region_from_point
 from Scanning.contour_finder import region_contrast_rgb
 from Scanning.scan_profile import (
+    CLASSIFICATION_RANGE,
+    CLASSIFICATION_SAMPLE,
     ScanProfile,
     ScanProfileError,
     build_region_overlay,
@@ -25,6 +27,13 @@ class ScanProfilePanel:
     DEFAULT_FLOOD_FILL_TOLERANCE = 15
     PREVIEW_LEGEND_POSITION = contour_finder.LEGEND_TOP_RIGHT
     SIMILAR_CLASS_CONTRAST_DISTANCE = 10.0
+    CLASSIFICATION_LABELS = {
+        CLASSIFICATION_SAMPLE: "Sampled color",
+        CLASSIFICATION_RANGE: "Contrast range",
+    }
+    CLASSIFICATION_VALUES = {
+        label: value for value, label in CLASSIFICATION_LABELS.items()
+    }
 
     def __init__(self, parent, root, app, scan_profile: ScanProfile):
         self.parent = parent
@@ -59,6 +68,11 @@ class ScanProfilePanel:
         self.class_name_var = tk.StringVar()
         self.class_group_var = tk.StringVar()
         self.identify_var = tk.BooleanVar(value=True)
+        self.classification_type_var = tk.StringVar(
+            value=self.CLASSIFICATION_LABELS[CLASSIFICATION_SAMPLE]
+        )
+        self.range_minimum_vars = [tk.StringVar() for _ in range(3)]
+        self.range_maximum_vars = [tk.StringVar() for _ in range(3)]
         self.minimum_size_var = tk.StringVar()
         self.maximum_size_var = tk.StringVar()
         self.threshold_var = tk.StringVar(value=str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
@@ -268,6 +282,32 @@ class ScanProfilePanel:
             textvariable=self.class_group_var,
         )
         self.class_group_combo.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        classification_row = Frame(self.class_options, bg="white")
+        classification_row.pack(fill="x", pady=(5, 0))
+        Label(
+            classification_row,
+            text="Classification",
+            bg="white",
+            fg="black",
+        ).pack(side="left")
+        self.classification_type_combo = ttk.Combobox(
+            classification_row,
+            textvariable=self.classification_type_var,
+            values=tuple(self.CLASSIFICATION_VALUES),
+            state="readonly",
+            width=15,
+        )
+        self.classification_type_combo.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(6, 0),
+        )
+        self.classification_type_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_classification_type_changed,
+        )
         self.identify_check = ttk.Checkbutton(
             self.class_options,
             text="Identify",
@@ -300,6 +340,51 @@ class ScanProfilePanel:
             width=5,
         )
         self.threshold_spinbox.pack(side="left")
+
+        self.range_options = Frame(self.dynamic_editor, bg="white")
+        Label(
+            self.range_options,
+            text="Signed RGB contrast range",
+            bg="white",
+            fg="black",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(5, 1))
+        Label(self.range_options, text="Min", bg="white", fg="black").grid(
+            row=1,
+            column=1,
+            padx=(7, 2),
+        )
+        Label(self.range_options, text="Max", bg="white", fg="black").grid(
+            row=1,
+            column=2,
+            padx=(3, 0),
+        )
+        self.range_entries = []
+        for row, channel in enumerate(("Red", "Green", "Blue"), start=2):
+            Label(
+                self.range_options,
+                text=channel,
+                bg="white",
+                fg="black",
+            ).grid(row=row, column=0, sticky="w")
+            minimum_entry = ttk.Spinbox(
+                self.range_options,
+                from_=-255,
+                to=255,
+                textvariable=self.range_minimum_vars[row - 2],
+                width=7,
+            )
+            maximum_entry = ttk.Spinbox(
+                self.range_options,
+                from_=-255,
+                to=255,
+                textvariable=self.range_maximum_vars[row - 2],
+                width=7,
+            )
+            minimum_entry.grid(row=row, column=1, sticky="ew", padx=(7, 2), pady=1)
+            maximum_entry.grid(row=row, column=2, sticky="ew", padx=(3, 0), pady=1)
+            self.range_entries.extend((minimum_entry, maximum_entry))
+        self.range_options.columnconfigure(1, weight=1)
+        self.range_options.columnconfigure(2, weight=1)
 
         self.class_size_options = Frame(self.dynamic_editor, bg="white")
         Label(
@@ -416,9 +501,11 @@ class ScanProfilePanel:
         self.item_edit_widgets = (
             self.class_name_entry,
             self.class_group_combo,
+            self.classification_type_combo,
             self.identify_check,
             self.load_image_button,
             self.threshold_spinbox,
+            *self.range_entries,
             self.minimum_size_entry,
             self.maximum_size_entry,
             self.confirm_item_button,
@@ -498,6 +585,10 @@ class ScanProfilePanel:
         self.class_name_var.set(self._next_default_class_name())
         self.class_group_var.set("")
         self.identify_var.set(True)
+        self.classification_type_var.set(
+            self.CLASSIFICATION_LABELS[CLASSIFICATION_SAMPLE]
+        )
+        self._set_range_values(None, None)
         self.minimum_size_var.set("")
         self.maximum_size_var.set("")
         self.threshold_var.set(str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
@@ -586,6 +677,13 @@ class ScanProfilePanel:
         if not self.class_edit_active or self.editor_kind != "class":
             self._show_create_or_edit_item_prompt()
             return
+        if self._classification_type() == CLASSIFICATION_RANGE:
+            messagebox.showinfo(
+                "Contrast Range",
+                "Contrast range classes use the six RGB minimum and maximum values "
+                "instead of a reference image.",
+            )
+            return
         selected = filedialog.askopenfilename(
             title="Select an Image Containing the Region",
             filetypes=self.CLASS_IMAGE_TYPES,
@@ -620,17 +718,29 @@ class ScanProfilePanel:
         self._confirm_class()
 
     def _confirm_class(self):
-        if not self._region_is_ready():
+        classification_type = self._classification_type()
+        if (
+            classification_type == CLASSIFICATION_SAMPLE
+            and not self._region_is_ready()
+        ):
             return
         class_name = self.class_name_var.get().strip() or self._next_default_class_name()
         self.class_name_var.set(class_name)
         try:
-            threshold = self._get_threshold()
             minimum_size, maximum_size = self._get_class_size_requirement()
+            if classification_type == CLASSIFICATION_RANGE:
+                minimum_rgb, maximum_rgb = self._get_contrast_range()
+                threshold = None
+            else:
+                threshold = self._get_threshold()
+                minimum_rgb = maximum_rgb = None
         except ScanProfileError as exc:
             messagebox.showwarning("Invalid Class", str(exc))
             return
-        if threshold != self.current_threshold:
+        if (
+            classification_type == CLASSIFICATION_SAMPLE
+            and threshold != self.current_threshold
+        ):
             self._show_select_region_again()
             return
         existing_index = self.scan_profile.find_class(class_name)
@@ -648,39 +758,58 @@ class ScanProfilePanel:
                 f"A class labeled '{class_name}' already exists.",
             )
             return
-        similar_match = self._find_similar_class(
-            self.current_contrast_rgb,
-            exclude_index=target_index,
-        )
-        if similar_match is not None:
-            similar_class, distance = similar_match
-            if not messagebox.askyesno(
-                "Add Similar Class?",
-                f"'{class_name}' closely resembles '{similar_class['name']}'.\n\n"
-                f"Contrast distance: {distance:.1f}.\n\nContinue?",
-            ):
-                return
-        try:
-            profile_class = self.scan_profile.set_class(
-                name=class_name,
-                source_path=self.current_source_path,
-                image_bgr=self.current_image_bgr.copy(),
-                region_mask=self.current_region_mask.copy(),
-                seed_point=self.current_seed_point,
-                threshold=self.current_threshold,
-                minimum_size_um=minimum_size,
-                maximum_size_um=maximum_size,
-                group=self.class_group_var.get(),
-                identify=bool(self.identify_var.get()),
-                index=target_index,
+        if classification_type == CLASSIFICATION_SAMPLE:
+            similar_match = self._find_similar_class(
+                self.current_contrast_rgb,
+                exclude_index=target_index,
             )
+            if similar_match is not None:
+                similar_class, distance = similar_match
+                if not messagebox.askyesno(
+                    "Add Similar Class?",
+                    f"'{class_name}' closely resembles '{similar_class['name']}'.\n\n"
+                    f"Contrast distance: {distance:.1f}.\n\nContinue?",
+                ):
+                    return
+        try:
+            common_arguments = {
+                "name": class_name,
+                "minimum_size_um": minimum_size,
+                "maximum_size_um": maximum_size,
+                "group": self.class_group_var.get(),
+                "identify": bool(self.identify_var.get()),
+                "index": target_index,
+            }
+            if classification_type == CLASSIFICATION_RANGE:
+                profile_class = self.scan_profile.set_range_class(
+                    minimum_contrast_rgb=minimum_rgb,
+                    maximum_contrast_rgb=maximum_rgb,
+                    **common_arguments,
+                )
+            else:
+                profile_class = self.scan_profile.set_class(
+                    source_path=self.current_source_path,
+                    image_bgr=self.current_image_bgr.copy(),
+                    region_mask=self.current_region_mask.copy(),
+                    seed_point=self.current_seed_point,
+                    threshold=self.current_threshold,
+                    **common_arguments,
+                )
         except ScanProfileError as exc:
             messagebox.showwarning("Invalid Class", str(exc))
             return
-        self._finish_item_confirmation(
-            profile_class,
-            f"Confirmed {profile_class['name']}. RGB contrast: {profile_class['contrast_rgb']}.",
-        )
+        if classification_type == CLASSIFICATION_RANGE:
+            status = (
+                f"Confirmed {profile_class['name']}. RGB range: "
+                f"{profile_class['minimum_contrast_rgb']} to "
+                f"{profile_class['maximum_contrast_rgb']}."
+            )
+        else:
+            status = (
+                f"Confirmed {profile_class['name']}. "
+                f"RGB contrast: {profile_class['contrast_rgb']}."
+            )
+        self._finish_item_confirmation(profile_class, status)
 
     def _finish_item_confirmation(self, item, status):
         if self.current_image_bgr is not None:
@@ -802,6 +931,11 @@ class ScanProfilePanel:
         if not self.class_edit_active:
             self._show_create_or_edit_item_prompt()
             return
+        if self._classification_type() == CLASSIFICATION_RANGE:
+            self.status_var.set(
+                "Contrast range classes are defined by the RGB min/max fields."
+            )
+            return
         if self.current_image_bgr is None:
             messagebox.showinfo("Load Image", "Load an image before selecting a region.")
             return
@@ -863,14 +997,33 @@ class ScanProfilePanel:
         self.class_name_var.set(item["name"])
         self.class_group_var.set(item["group"])
         self.identify_var.set(item["identify"])
-        self.threshold_var.set(str(item["threshold"]))
+        classification_type = item.get(
+            "classification_type",
+            CLASSIFICATION_SAMPLE,
+        )
+        self.classification_type_var.set(
+            self.CLASSIFICATION_LABELS[classification_type]
+        )
         self.minimum_size_var.set(
             "" if item["minimum_size_um"] is None else f"{item['minimum_size_um']:g}"
         )
         self.maximum_size_var.set(
             "" if item["maximum_size_um"] is None else f"{item['maximum_size_um']:g}"
         )
-        self._load_region_reference(item)
+        if classification_type == CLASSIFICATION_RANGE:
+            self._set_range_values(
+                item["minimum_contrast_rgb"],
+                item["maximum_contrast_rgb"],
+            )
+            self._clear_pending_image()
+            self._set_contrast_display(None)
+            self.app.display_image_message(
+                "This class matches its signed RGB contrast range."
+            )
+        else:
+            self.threshold_var.set(str(item["threshold"]))
+            self._set_range_values(None, None)
+            self._load_region_reference(item)
 
     def _load_region_reference(self, item):
         self.current_source_path = item["source_path"]
@@ -891,6 +1044,7 @@ class ScanProfilePanel:
     def _show_editor_options(self, kind):
         self.class_options.pack_forget()
         self.region_options.pack_forget()
+        self.range_options.pack_forget()
         self.class_size_options.pack_forget()
         self.contrast_label.pack_forget()
         self.confirm_item_button.pack_forget()
@@ -904,9 +1058,13 @@ class ScanProfilePanel:
             self.editor.pack(fill="x", pady=(4, 0), before=self.preview_heading)
         self.editor_title_var.set("Class")
         self.class_options.pack(fill="x")
-        self.region_options.pack(fill="x")
+        if self._classification_type() == CLASSIFICATION_RANGE:
+            self.range_options.pack(fill="x")
+        else:
+            self.region_options.pack(fill="x")
         self.class_size_options.pack(fill="x", pady=(5, 0))
-        self.contrast_label.pack(anchor="w", pady=(5, 0))
+        if self._classification_type() == CLASSIFICATION_SAMPLE:
+            self.contrast_label.pack(anchor="w", pady=(5, 0))
         self.confirm_item_button.configure(text="Confirm class")
         self.confirm_item_button.pack(pady=(5, 0))
         self._schedule_footer_resize()
@@ -935,7 +1093,14 @@ class ScanProfilePanel:
                 self.class_list.insert(tk.END, self._class_list_text(profile_class))
                 self._display_items.append(("class", index))
             if self.pending_new_class:
-                self.class_list.insert(tk.END, f"[C][I] {self.class_name_var.get()}")
+                tags = self._class_tags(
+                    self._classification_type(),
+                    bool(self.identify_var.get()),
+                )
+                self.class_list.insert(
+                    tk.END,
+                    f"{tags} {self.class_name_var.get()}",
+                )
             class_count = len(self.scan_profile.classes)
             pending_count = int(self.pending_new_class)
             self.item_count_var.set(f"Classes: {class_count + pending_count}")
@@ -955,11 +1120,19 @@ class ScanProfilePanel:
         finally:
             self._updating_item_list = False
 
-    @staticmethod
-    def _class_list_text(profile_class):
-        tags = "[C][I]" if profile_class["identify"] else "[C]"
+    @classmethod
+    def _class_list_text(cls, profile_class):
+        tags = cls._class_tags(
+            profile_class.get("classification_type", CLASSIFICATION_SAMPLE),
+            profile_class["identify"],
+        )
         group = f"{profile_class['group']} / " if profile_class["group"] else ""
         return f"{tags} {group}{profile_class['name']}"
+
+    @staticmethod
+    def _class_tags(classification_type, identify):
+        type_tag = "[R]" if classification_type == CLASSIFICATION_RANGE else "[S]"
+        return f"{type_tag}[I]" if identify else type_tag
 
     def _selected_list_item(self):
         selection = self.class_list.curselection()
@@ -1019,6 +1192,90 @@ class ScanProfilePanel:
         if not 0 <= threshold <= 255:
             raise ScanProfileError("Color tolerance must be between 0 and 255.")
         return threshold
+
+    def _classification_type(self):
+        return self.CLASSIFICATION_VALUES.get(
+            self.classification_type_var.get(),
+            CLASSIFICATION_SAMPLE,
+        )
+
+    def _on_classification_type_changed(self, event=None):
+        if not self.class_edit_active:
+            return
+        classification_type = self._classification_type()
+        if (
+            classification_type == CLASSIFICATION_RANGE
+            and self.current_contrast_rgb is not None
+            and all(not value.get().strip() for value in self.range_minimum_vars)
+            and all(not value.get().strip() for value in self.range_maximum_vars)
+        ):
+            try:
+                tolerance = self._get_threshold()
+            except ScanProfileError:
+                tolerance = self.DEFAULT_FLOOD_FILL_TOLERANCE
+            minimum_rgb = tuple(
+                max(-255, value - tolerance)
+                for value in self.current_contrast_rgb
+            )
+            maximum_rgb = tuple(
+                min(255, value + tolerance)
+                for value in self.current_contrast_rgb
+            )
+            self._set_range_values(minimum_rgb, maximum_rgb)
+        self._show_editor_options("class")
+        if self.pending_new_class:
+            self._refresh_item_list(select_pending=True)
+        if classification_type == CLASSIFICATION_RANGE:
+            self.status_var.set(
+                "Enter inclusive signed RGB contrast minima and maxima."
+            )
+        elif self.current_image_bgr is None:
+            self.status_var.set(
+                "Load an image and click a reference region for this sampled class."
+            )
+        else:
+            self.status_var.set("Click a reference region for this sampled class.")
+
+    def _get_contrast_range(self):
+        values = []
+        for bound, variables in (
+            ("minimum", self.range_minimum_vars),
+            ("maximum", self.range_maximum_vars),
+        ):
+            channels = []
+            for channel, variable in zip(("Red", "Green", "Blue"), variables):
+                raw_value = variable.get().strip()
+                try:
+                    value = int(raw_value)
+                except ValueError as exc:
+                    raise ScanProfileError(
+                        f"{channel} {bound} contrast must be a whole number."
+                    ) from exc
+                if not -255 <= value <= 255:
+                    raise ScanProfileError(
+                        f"{channel} {bound} contrast must be between -255 and 255."
+                    )
+                channels.append(value)
+            values.append(tuple(channels))
+        minimum_rgb, maximum_rgb = values
+        for channel, minimum, maximum in zip(
+            ("Red", "Green", "Blue"),
+            minimum_rgb,
+            maximum_rgb,
+        ):
+            if minimum > maximum:
+                raise ScanProfileError(
+                    f"{channel} minimum contrast cannot exceed its maximum."
+                )
+        return minimum_rgb, maximum_rgb
+
+    def _set_range_values(self, minimum_rgb, maximum_rgb):
+        for variables, values in (
+            (self.range_minimum_vars, minimum_rgb),
+            (self.range_maximum_vars, maximum_rgb),
+        ):
+            for index, variable in enumerate(variables):
+                variable.set("" if values is None else str(values[index]))
 
     def _get_class_size_requirement(self):
         return self._parse_size_requirement(
@@ -1093,6 +1350,11 @@ class ScanProfilePanel:
         for index, profile_class in enumerate(self.scan_profile.classes):
             if index == exclude_index:
                 continue
+            if profile_class.get(
+                "classification_type",
+                CLASSIFICATION_SAMPLE,
+            ) != CLASSIFICATION_SAMPLE:
+                continue
             distance = float(np.linalg.norm(
                 candidate - np.asarray(profile_class["contrast_rgb"], dtype=np.float64)
             ))
@@ -1118,6 +1380,10 @@ class ScanProfilePanel:
         self.class_name_var.set("")
         self.class_group_var.set("")
         self.identify_var.set(True)
+        self.classification_type_var.set(
+            self.CLASSIFICATION_LABELS[CLASSIFICATION_SAMPLE]
+        )
+        self._set_range_values(None, None)
         self.minimum_size_var.set("")
         self.maximum_size_var.set("")
         self.threshold_var.set(str(self.DEFAULT_FLOOD_FILL_TOLERANCE))

@@ -12,6 +12,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_CONTRAST_MATCH_THRESHOLD = 3
 DEFAULT_REGION_FLOOD_FILL_THRESHOLD = 10
+CLASSIFICATION_SAMPLE = "sample"
+CLASSIFICATION_RANGE = "range"
+CLASSIFICATION_TYPES = {CLASSIFICATION_SAMPLE, CLASSIFICATION_RANGE}
 CLASS_COLOR_SATURATION = 0.58
 CLASS_COLOR_LIGHTNESS = 0.72
 LEGEND_TOP_LEFT = "top_left"
@@ -121,32 +124,78 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"Profile class has an invalid name: {profile_path}")
         name = name.strip()
-
-        try:
-            contrast_rgb = _read_rgb_triplet(
-                saved_class["contrast_rgb"],
-                "RGB contrast",
-                name,
-            )
-            saved_threshold = saved_class.get("contrast_threshold")
-            if saved_threshold is None:
-                saved_threshold = saved_class["flood_fill"]["threshold"]
-            tolerance = (
-                float(saved_threshold)
-                if contrast_threshold is None
-                else float(contrast_threshold)
-            )
-        except KeyError as exc:
+        classification_type = saved_class.get(
+            "classification_type",
+            CLASSIFICATION_SAMPLE,
+        )
+        if classification_type not in CLASSIFICATION_TYPES:
             raise ValueError(
-                f"Profile class {name!r} is missing RGB contrast data or a threshold."
-            ) from exc
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Profile class {name!r} has invalid color data.") from exc
+                f"Profile class {name!r} has an invalid classification type."
+            )
+        color_configuration = {"classification_type": classification_type}
+        if classification_type == CLASSIFICATION_RANGE:
+            try:
+                saved_range = saved_class["contrast_range_rgb"]
+                minimum_rgb = _read_rgb_triplet(
+                    saved_range["minimum"],
+                    "minimum RGB contrast",
+                    name,
+                )
+                maximum_rgb = _read_rgb_triplet(
+                    saved_range["maximum"],
+                    "maximum RGB contrast",
+                    name,
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"Profile class {name!r} is missing RGB contrast range data."
+                ) from exc
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Profile class {name!r} has invalid RGB contrast range data."
+                ) from exc
+            if (
+                np.any(minimum_rgb < -255)
+                or np.any(maximum_rgb > 255)
+                or np.any(minimum_rgb > maximum_rgb)
+            ):
+                raise ValueError(
+                    f"Profile class {name!r} has an invalid RGB contrast range."
+                )
+            color_configuration.update({
+                "minimum_contrast_rgb": minimum_rgb,
+                "maximum_contrast_rgb": maximum_rgb,
+            })
+        else:
+            try:
+                contrast_rgb = _read_rgb_triplet(
+                    saved_class["contrast_rgb"],
+                    "RGB contrast",
+                    name,
+                )
+                saved_threshold = saved_class.get("contrast_threshold")
+                if saved_threshold is None:
+                    saved_threshold = saved_class["flood_fill"]["threshold"]
+                tolerance = (
+                    float(saved_threshold)
+                    if contrast_threshold is None
+                    else float(contrast_threshold)
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"Profile class {name!r} is missing RGB contrast data or a threshold."
+                ) from exc
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Profile class {name!r} has invalid color data.") from exc
 
-        if np.any(contrast_rgb < -255) or np.any(contrast_rgb > 255):
-            raise ValueError(f"Profile class {name!r} has an invalid RGB contrast.")
-        if not np.isfinite(tolerance) or not 0 <= tolerance <= 255:
-            raise ValueError(f"Profile class {name!r} has an invalid tolerance.")
+            if np.any(contrast_rgb < -255) or np.any(contrast_rgb > 255):
+                raise ValueError(f"Profile class {name!r} has an invalid RGB contrast.")
+            if not np.isfinite(tolerance) or not 0 <= tolerance <= 255:
+                raise ValueError(f"Profile class {name!r} has an invalid tolerance.")
+            color_configuration.update({
+                "contrast_rgb": contrast_rgb,
+                "tolerance": tolerance,
+            })
         identify = saved_class.get("identify", True)
         if not isinstance(identify, bool):
             raise ValueError(f"Profile class {name!r} has invalid matching flags.")
@@ -159,16 +208,16 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
             saved_class.get("size_requirement"),
             f"Profile class {name!r}",
         )
-        profile_classes.append({
+        configured_class = {
             "name": name,
-            "contrast_rgb": contrast_rgb,
-            "tolerance": tolerance,
             "class_index": len(profile_classes),
             "group": group.strip(),
             "identify": identify,
             "minimum_size_um": minimum,
             "maximum_size_um": maximum,
-        })
+        }
+        configured_class.update(color_configuration)
+        profile_classes.append(configured_class)
 
     names = [item["name"].casefold() for item in profile_classes]
     if len(names) != len(set(names)):
@@ -197,7 +246,7 @@ def _size_matches(size_um, minimum, maximum):
 
 
 def match_profile_class(contrast_rgb, profile_classes, size_um=None):
-    """Return the nearest enabled class inside its color and size limits."""
+    """Return the nearest enabled sample or range class inside all limits."""
     matches = []
     for profile_class in profile_classes:
         if not profile_class.get("identify", True):
@@ -208,13 +257,31 @@ def match_profile_class(contrast_rgb, profile_classes, size_um=None):
             profile_class.get("maximum_size_um"),
         ):
             continue
-        difference = np.abs(contrast_rgb - profile_class["contrast_rgb"])
-        if np.all(difference <= profile_class["tolerance"]):
-            matches.append((
-                float(np.linalg.norm(difference)),
-                profile_class,
-                difference,
-            ))
+        classification_type = profile_class.get(
+            "classification_type",
+            CLASSIFICATION_SAMPLE,
+        )
+        if classification_type == CLASSIFICATION_RANGE:
+            minimum_rgb = profile_class["minimum_contrast_rgb"]
+            maximum_rgb = profile_class["maximum_contrast_rgb"]
+            if np.all(contrast_rgb >= minimum_rgb) and np.all(
+                contrast_rgb <= maximum_rgb
+            ):
+                center = (minimum_rgb + maximum_rgb) / 2.0
+                difference = np.abs(contrast_rgb - center)
+                matches.append((
+                    float(np.linalg.norm(difference)),
+                    profile_class,
+                    difference,
+                ))
+        else:
+            difference = np.abs(contrast_rgb - profile_class["contrast_rgb"])
+            if np.all(difference <= profile_class["tolerance"]):
+                matches.append((
+                    float(np.linalg.norm(difference)),
+                    profile_class,
+                    difference,
+                ))
     return min(matches, key=lambda match: match[0]) if matches else None
 
 
@@ -719,13 +786,20 @@ def _make_region_result(
         "matched_group": (
             (matched_class.get("group") or None) if matched_class else None
         ),
+        "matched_classification_type": (
+            matched_class.get("classification_type", CLASSIFICATION_SAMPLE)
+            if matched_class
+            else None
+        ),
         "size_um": float(size_um) if size_um is not None else None,
         "area_um2": float(area_um2) if area_um2 is not None else None,
         "inside_profile_size": geometry["inside_profile_size"],
         "matched_color_rgb": (
             matched_class["display_color_rgb"] if matched_class else None
         ),
-        "match_threshold": matched_class["tolerance"] if matched_class else None,
+        "match_threshold": (
+            matched_class.get("tolerance") if matched_class else None
+        ),
         "match_distance": match[0] if match else None,
         "channel_difference_rgb": (
             tuple(float(value) for value in match[2])

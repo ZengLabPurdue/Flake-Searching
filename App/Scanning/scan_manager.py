@@ -11,6 +11,7 @@ import numpy as np
 
 from config import HOME_DIR, PIXEL_SIZE, RESOLUTION_DIM, CROP_RATIO, RELATIVE_XY, MAP_SIZE
 from Imaging import image_metadata
+from Imaging.flatfield_storage import save_vignette_filter
 
 from . import chip_detection
 from . import flake_detection
@@ -1668,11 +1669,13 @@ class ScanManager:
 
         vignette_filter = np.clip(vignette_filter_bgr, 0, 255).astype(np.uint8)
 
-        save_path = HOME_DIR / "Flatfields" / f"vignette_filter_{magnification.lower()}_{self.app.get_resolution().lower()}.png"
-
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        if not cv2.imwrite(str(save_path), vignette_filter):
-            raise OSError(f"Could not save vignette filter to {save_path}")
+        save_path, backup_path = save_vignette_filter(
+            vignette_filter,
+            magnification,
+            self.app.get_resolution(),
+        )
         self.frame_processor.clear_vignette_filter_cache()
 
+        if backup_path is not None:
+            print(f"Backed up previous vignette image to: {backup_path}")
         print(f"Saved vignette image to: {save_path}")

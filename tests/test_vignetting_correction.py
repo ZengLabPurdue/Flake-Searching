@@ -1,7 +1,10 @@
+from datetime import datetime
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
+import cv2
 import numpy as np
 
 
@@ -9,6 +12,10 @@ APP_DIR = Path(__file__).resolve().parents[1] / "App"
 sys.path.insert(0, str(APP_DIR))
 
 from Imaging import vignetting_corrector  # noqa: E402
+from Imaging.flatfield_storage import (  # noqa: E402
+    save_vignette_filter,
+    vignette_filter_path,
+)
 from Imaging.frame_processing import FrameProcessor  # noqa: E402
 
 
@@ -19,6 +26,69 @@ class _FakeApp:
 
 
 class VignettingCorrectionTests(unittest.TestCase):
+    def test_replacing_flatfield_preserves_previous_calibration_in_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            flatfield_dir = root / "active"
+            backup_dir = root / "backups"
+            active_path = vignette_filter_path(
+                "10X",
+                "HIGH",
+                flatfield_dir=flatfield_dir,
+            )
+            active_path.parent.mkdir(parents=True)
+            previous = np.full((5, 7, 3), (30, 60, 90), dtype=np.uint8)
+            replacement = np.full((5, 7, 3), (80, 100, 120), dtype=np.uint8)
+            self.assertTrue(cv2.imwrite(str(active_path), previous))
+
+            saved_path, backup_path = save_vignette_filter(
+                replacement,
+                "10X",
+                "HIGH",
+                flatfield_dir=flatfield_dir,
+                backup_dir=backup_dir,
+                timestamp=datetime(2026, 7, 29, 12, 34, 56, 789),
+            )
+
+            self.assertEqual(saved_path, active_path)
+            self.assertEqual(
+                backup_path.name,
+                "vignette_filter_10x_high_20260729_123456_000789.png",
+            )
+            np.testing.assert_array_equal(
+                cv2.imread(str(saved_path), cv2.IMREAD_COLOR),
+                replacement,
+            )
+            np.testing.assert_array_equal(
+                cv2.imread(str(backup_path), cv2.IMREAD_COLOR),
+                previous,
+            )
+            self.assertEqual(
+                list(flatfield_dir.glob("*.tmp.png")),
+                [],
+            )
+
+    def test_first_flatfield_save_does_not_create_an_empty_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = np.full((3, 4, 3), 100, dtype=np.uint8)
+
+            saved_path, backup_path = save_vignette_filter(
+                image,
+                "2X",
+                "100NM_HIGH",
+                flatfield_dir=root / "active",
+                backup_dir=root / "backups",
+            )
+
+            self.assertTrue(saved_path.is_file())
+            self.assertIsNone(backup_path)
+            self.assertFalse((root / "backups").exists())
+
+    def test_flatfield_filename_rejects_path_traversal(self):
+        with self.assertRaises(ValueError):
+            vignette_filter_path("../10X", "HIGH")
+
     def test_per_channel_gain_removes_spatial_color_cast(self):
         flatfield = np.array(
             [

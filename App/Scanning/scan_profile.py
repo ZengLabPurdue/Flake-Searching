@@ -15,10 +15,13 @@ from .contour_extractor import get_region_from_point
 
 
 PROFILE_SCHEMA = "flake-search.scan-search-profile"
-PROFILE_VERSION = 5
-SUPPORTED_PROFILE_VERSIONS = {1, 2, 3, 4, PROFILE_VERSION}
+PROFILE_VERSION = 6
+SUPPORTED_PROFILE_VERSIONS = {1, 2, 3, 4, 5, PROFILE_VERSION}
 PROFILE_FILENAME = "profile.json"
 DEFAULT_PROFILES_DIR = HOME_DIR / "Profiles"
+CLASSIFICATION_SAMPLE = "sample"
+CLASSIFICATION_RANGE = "range"
+CLASSIFICATION_TYPES = {CLASSIFICATION_SAMPLE, CLASSIFICATION_RANGE}
 ScanProfileError = ValueError
 
 def _profile_slug(name):
@@ -148,6 +151,44 @@ class ScanProfile:
             self.classes[index] = profile_class
         return profile_class
 
+    def set_range_class(
+        self,
+        name,
+        minimum_contrast_rgb,
+        maximum_contrast_rgb,
+        minimum_size_um=None,
+        maximum_size_um=None,
+        group="",
+        identify=True,
+        index=None,
+        derived_from=None,
+    ):
+        class_id = None
+        if index is not None:
+            existing_class = self.classes[index]
+            class_id = existing_class["id"]
+            if derived_from is None:
+                derived_from = existing_class.get("derived_from")
+        profile_class = self._make_range_class(
+            name,
+            minimum_contrast_rgb,
+            maximum_contrast_rgb,
+            minimum_size_um,
+            maximum_size_um,
+            class_id=class_id,
+            group=group,
+            identify=identify,
+            derived_from=derived_from,
+        )
+        duplicate = self.find_class(profile_class["name"])
+        if duplicate is not None and duplicate != index:
+            raise ScanProfileError(f"A class named '{profile_class['name']}' already exists.")
+        if index is None:
+            self.classes.append(profile_class)
+        else:
+            self.classes[index] = profile_class
+        return profile_class
+
     def set_size_requirement(self, minimum=None, maximum=None):
         minimum, maximum = self.validate_size_requirement(minimum, maximum)
         self.minimum_size_um = minimum
@@ -162,21 +203,7 @@ class ScanProfile:
             "profile": source_profile_name or self.name or None,
             "class_id": source["id"],
         }
-        copied = self._make_class(
-            copied_name,
-            source["source_path"],
-            source["image_bgr"].copy(),
-            source["region_mask"].copy(),
-            source["seed_point"],
-            source["threshold"],
-            source["connectivity"],
-            source["minimum_size_um"],
-            source["maximum_size_um"],
-            contrast=source["contrast_rgb"],
-            group=source["group"],
-            identify=source["identify"],
-            derived_from=origin,
-        )
+        copied = self._copy_class_record(source, copied_name, origin)
         self.classes.append(copied)
         return copied
 
@@ -189,21 +216,7 @@ class ScanProfile:
                 "profile": source_profile.name or None,
                 "class_id": source["id"],
             }
-            copied = self._make_class(
-                copied_name,
-                source["source_path"],
-                source["image_bgr"].copy(),
-                source["region_mask"].copy(),
-                source["seed_point"],
-                source["threshold"],
-                source["connectivity"],
-                source["minimum_size_um"],
-                source["maximum_size_um"],
-                contrast=source["contrast_rgb"],
-                group=source["group"],
-                identify=source["identify"],
-                derived_from=origin,
-            )
+            copied = self._copy_class_record(source, copied_name, origin)
             self.classes.append(copied)
             added.append(copied)
         return added
@@ -212,21 +225,41 @@ class ScanProfile:
         """Build classifier input directly from the editable in-memory profile."""
         classes = []
         for class_index, profile_class in enumerate(self.classes):
-            tolerance = (
-                profile_class["threshold"]
-                if contrast_threshold is None
-                else contrast_threshold
-            )
-            classes.append({
+            classification_type = profile_class["classification_type"]
+            configured_class = {
                 "name": profile_class["name"],
-                "contrast_rgb": np.asarray(profile_class["contrast_rgb"], dtype=np.float64),
-                "tolerance": float(tolerance),
+                "classification_type": classification_type,
                 "class_index": class_index,
                 "group": profile_class["group"],
                 "identify": profile_class["identify"],
                 "minimum_size_um": profile_class["minimum_size_um"],
                 "maximum_size_um": profile_class["maximum_size_um"],
-            })
+            }
+            if classification_type == CLASSIFICATION_RANGE:
+                configured_class.update({
+                    "minimum_contrast_rgb": np.asarray(
+                        profile_class["minimum_contrast_rgb"],
+                        dtype=np.float64,
+                    ),
+                    "maximum_contrast_rgb": np.asarray(
+                        profile_class["maximum_contrast_rgb"],
+                        dtype=np.float64,
+                    ),
+                })
+            else:
+                tolerance = (
+                    profile_class["threshold"]
+                    if contrast_threshold is None
+                    else contrast_threshold
+                )
+                configured_class.update({
+                    "contrast_rgb": np.asarray(
+                        profile_class["contrast_rgb"],
+                        dtype=np.float64,
+                    ),
+                    "tolerance": float(tolerance),
+                })
+            classes.append(configured_class)
         return {
             "classes": classes,
             "minimum_size_um": self.minimum_size_um,
@@ -270,41 +303,64 @@ class ScanProfile:
         if destination.exists() and not overwrite:
             raise FileExistsError(destination)
 
+        destination.mkdir(parents=True, exist_ok=True)
         images_dir = destination / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
         saved_classes = []
 
         for profile_class in self.classes:
             class_id = profile_class["id"]
-            filename = f"{_profile_slug(profile_class['name'])}_{class_id[:8]}_source.png"
-            source_path = images_dir / filename
-            _write_image(source_path, profile_class["image_bgr"])
             minimum, maximum = self.validate_size_requirement(
                 profile_class["minimum_size_um"],
                 profile_class["maximum_size_um"],
             )
-            red, green, blue = profile_class["contrast_rgb"]
-            saved_classes.append({
+            saved_class = {
                 "id": class_id,
                 "name": profile_class["name"],
-                "source_image": f"images/{filename}",
-                "seed_point": {
-                    "x": profile_class["seed_point"][0],
-                    "y": profile_class["seed_point"][1],
-                },
-                "flood_fill": {
-                    "threshold": profile_class["threshold"],
-                    "connectivity": profile_class["connectivity"],
-                },
+                "classification_type": profile_class["classification_type"],
                 "size_requirement": (
                     {"minimum_size_um": minimum, "maximum_size_um": maximum}
                     if minimum is not None or maximum is not None
                     else None
                 ),
-                "contrast_rgb": {"red": red, "green": green, "blue": blue},
                 "group": profile_class["group"] or None,
                 "identify": profile_class["identify"],
-            })
+            }
+            if profile_class["classification_type"] == CLASSIFICATION_RANGE:
+                minimum_rgb = profile_class["minimum_contrast_rgb"]
+                maximum_rgb = profile_class["maximum_contrast_rgb"]
+                saved_class["contrast_range_rgb"] = {
+                    "minimum": {
+                        "red": minimum_rgb[0],
+                        "green": minimum_rgb[1],
+                        "blue": minimum_rgb[2],
+                    },
+                    "maximum": {
+                        "red": maximum_rgb[0],
+                        "green": maximum_rgb[1],
+                        "blue": maximum_rgb[2],
+                    },
+                }
+            else:
+                images_dir.mkdir(parents=True, exist_ok=True)
+                filename = (
+                    f"{_profile_slug(profile_class['name'])}_{class_id[:8]}_source.png"
+                )
+                source_path = images_dir / filename
+                _write_image(source_path, profile_class["image_bgr"])
+                red, green, blue = profile_class["contrast_rgb"]
+                saved_class.update({
+                    "source_image": f"images/{filename}",
+                    "seed_point": {
+                        "x": profile_class["seed_point"][0],
+                        "y": profile_class["seed_point"][1],
+                    },
+                    "flood_fill": {
+                        "threshold": profile_class["threshold"],
+                        "connectivity": profile_class["connectivity"],
+                    },
+                    "contrast_rgb": {"red": red, "green": green, "blue": blue},
+                })
+            saved_classes.append(saved_class)
             if profile_class["derived_from"] is not None:
                 saved_classes[-1]["derived_from"] = profile_class["derived_from"]
 
@@ -366,13 +422,48 @@ class ScanProfile:
                 raise ScanProfileError(f"Class {index} must be a JSON object.")
 
             class_name = saved_class.get("name")
-            seed = saved_class.get("seed_point")
-            flood_fill = saved_class.get("flood_fill")
             if not isinstance(class_name, str) or not class_name.strip():
                 raise ScanProfileError(f"Class {index} has no name.")
+            size = (
+                self._read_size(saved_class.get("size_requirement"))
+                if "size_requirement" in saved_class
+                else (profile_size if profile_version < 3 else (None, None))
+            )
+            identify = saved_class.get("identify", True)
+            classification_type = saved_class.get(
+                "classification_type",
+                CLASSIFICATION_SAMPLE,
+            )
+            if classification_type not in CLASSIFICATION_TYPES:
+                raise ScanProfileError(
+                    f"Class {class_name} has an invalid classification type."
+                )
+            if classification_type == CLASSIFICATION_RANGE:
+                if profile_version < 6:
+                    raise ScanProfileError(
+                        f"Class {class_name} uses ranges in an older profile version."
+                    )
+                minimum_rgb, maximum_rgb = self._read_contrast_range(
+                    saved_class.get("contrast_range_rgb"),
+                    class_name,
+                )
+                loaded_classes.append(self._make_range_class(
+                    class_name,
+                    minimum_rgb,
+                    maximum_rgb,
+                    size[0],
+                    size[1],
+                    class_id=saved_class.get("id"),
+                    group=saved_class.get("group", ""),
+                    identify=identify,
+                    derived_from=saved_class.get("derived_from"),
+                ))
+                continue
+
+            seed = saved_class.get("seed_point")
+            flood_fill = saved_class.get("flood_fill")
             if not isinstance(seed, dict) or not isinstance(flood_fill, dict):
                 raise ScanProfileError(f"Class {index} is missing region metadata.")
-
             try:
                 seed_point = (int(seed["x"]), int(seed["y"]))
                 threshold = int(flood_fill["threshold"])
@@ -399,12 +490,6 @@ class ScanProfile:
                 connectivity,
                 class_name,
             )
-
-            size = (
-                self._read_size(saved_class.get("size_requirement"))
-                if "size_requirement" in saved_class
-                else (profile_size if profile_version < 3 else (None, None))
-            )
             contrast = saved_class.get("contrast_rgb")
             if isinstance(contrast, dict):
                 contrast = (
@@ -419,7 +504,6 @@ class ScanProfile:
                 # contrast from the source image and the current flake mask.
                 contrast = None
 
-            identify = saved_class.get("identify", True)
             loaded_classes.append(self._make_class(
                 class_name,
                 source_path,
@@ -493,6 +577,7 @@ class ScanProfile:
         profile_class = {
             "id": class_id or uuid4().hex,
             "name": name.strip(),
+            "classification_type": CLASSIFICATION_SAMPLE,
             "source_path": Path(source_path),
             "image_bgr": np.ascontiguousarray(image),
             "region_mask": np.ascontiguousarray(region_mask),
@@ -502,6 +587,8 @@ class ScanProfile:
             "minimum_size_um": minimum,
             "maximum_size_um": maximum,
             "contrast_rgb": contrast,
+            "minimum_contrast_rgb": None,
+            "maximum_contrast_rgb": None,
             "group": group,
             "identify": identify,
             "derived_from": derived_from,
@@ -531,15 +618,116 @@ class ScanProfile:
             )
         return profile_class
 
+    def _make_range_class(
+        self,
+        name,
+        minimum_contrast_rgb,
+        maximum_contrast_rgb,
+        minimum,
+        maximum,
+        class_id=None,
+        *,
+        group="",
+        identify=True,
+        derived_from=None,
+    ):
+        minimum, maximum = self.validate_size_requirement(minimum, maximum)
+        if class_id is not None and (
+            not isinstance(class_id, str) or not class_id.strip()
+        ):
+            raise ScanProfileError("Class ID must be non-empty text.")
+        minimum_rgb = self._validate_contrast(
+            minimum_contrast_rgb,
+            f"Class {name} minimum",
+        )
+        maximum_rgb = self._validate_contrast(
+            maximum_contrast_rgb,
+            f"Class {name} maximum",
+        )
+        if any(low > high for low, high in zip(minimum_rgb, maximum_rgb)):
+            raise ScanProfileError(
+                f"Class {name} contrast minimum cannot exceed its maximum."
+            )
+        profile_class = {
+            "id": class_id or uuid4().hex,
+            "name": name.strip(),
+            "classification_type": CLASSIFICATION_RANGE,
+            "source_path": None,
+            "image_bgr": None,
+            "region_mask": None,
+            "seed_point": None,
+            "threshold": None,
+            "connectivity": None,
+            "minimum_size_um": minimum,
+            "maximum_size_um": maximum,
+            "contrast_rgb": None,
+            "minimum_contrast_rgb": minimum_rgb,
+            "maximum_contrast_rgb": maximum_rgb,
+            "group": self._validate_group(group),
+            "identify": self._validate_flag(identify, "Identify"),
+            "derived_from": self._validate_derived_from(derived_from),
+        }
+        self._validate_class(profile_class)
+        return profile_class
+
+    def _copy_class_record(self, source, copied_name, origin):
+        if source["classification_type"] == CLASSIFICATION_RANGE:
+            return self._make_range_class(
+                copied_name,
+                source["minimum_contrast_rgb"],
+                source["maximum_contrast_rgb"],
+                source["minimum_size_um"],
+                source["maximum_size_um"],
+                group=source["group"],
+                identify=source["identify"],
+                derived_from=origin,
+            )
+        return self._make_class(
+            copied_name,
+            source["source_path"],
+            source["image_bgr"].copy(),
+            source["region_mask"].copy(),
+            source["seed_point"],
+            source["threshold"],
+            source["connectivity"],
+            source["minimum_size_um"],
+            source["maximum_size_um"],
+            contrast=source["contrast_rgb"],
+            group=source["group"],
+            identify=source["identify"],
+            derived_from=origin,
+        )
+
     def _validate_class(self, profile_class):
         name = profile_class["name"]
-        image = profile_class["image_bgr"]
-        mask = profile_class["region_mask"]
         if not name:
             raise ScanProfileError("Every class must have a name.")
+        classification_type = profile_class.get(
+            "classification_type",
+            CLASSIFICATION_SAMPLE,
+        )
+        if classification_type not in CLASSIFICATION_TYPES:
+            raise ScanProfileError(f"Class {name!r} has an invalid classification type.")
         self._validate_group(profile_class.get("group", ""))
         self._validate_flag(profile_class.get("identify"), "Identify")
         self._validate_derived_from(profile_class.get("derived_from"))
+        if classification_type == CLASSIFICATION_RANGE:
+            minimum_rgb = self._validate_contrast(
+                profile_class.get("minimum_contrast_rgb"),
+                f"Class {name!r} minimum",
+            )
+            maximum_rgb = self._validate_contrast(
+                profile_class.get("maximum_contrast_rgb"),
+                f"Class {name!r} maximum",
+            )
+            if any(low > high for low, high in zip(minimum_rgb, maximum_rgb)):
+                raise ScanProfileError(
+                    f"Class {name!r} contrast minimum cannot exceed its maximum."
+                )
+            return
+
+        image = profile_class["image_bgr"]
+        mask = profile_class["region_mask"]
         if image.ndim != 3 or image.shape[2] != 3:
             raise ScanProfileError(f"Class {name!r} has an invalid source image.")
         if mask.shape != image.shape[:2] or not np.any(mask > 0):
@@ -571,6 +759,29 @@ class ScanProfile:
         ):
             raise ScanProfileError(f"{label} has invalid RGB contrast.")
         return tuple(int(round(float(value))) for value in contrast)
+
+    def _read_contrast_range(self, value, class_name):
+        if not isinstance(value, dict):
+            raise ScanProfileError(
+                f"Class {class_name} has an invalid RGB contrast range."
+            )
+        result = []
+        for bound_name in ("minimum", "maximum"):
+            bound = value.get(bound_name)
+            if not isinstance(bound, dict):
+                raise ScanProfileError(
+                    f"Class {class_name} has an invalid RGB contrast range."
+                )
+            result.append(self._validate_contrast(
+                (bound.get("red"), bound.get("green"), bound.get("blue")),
+                f"Class {class_name} {bound_name}",
+            ))
+        minimum_rgb, maximum_rgb = result
+        if any(low > high for low, high in zip(minimum_rgb, maximum_rgb)):
+            raise ScanProfileError(
+                f"Class {class_name} contrast minimum cannot exceed its maximum."
+            )
+        return minimum_rgb, maximum_rgb
 
     def _region_mask(self, image, seed_point, threshold, connectivity, item_name):
         try:

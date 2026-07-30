@@ -9,3 +9,8 @@ App/Saved Images/
 
 # Ignore user-created scan search profiles
 App/Profiles/
+
+# Persistent microscope calibration images. These are ignored so they are not
+# mistaken for disposable untracked test/build output. Never clean these paths.
+App/Flatfields/*.png
+App/Calibration Backups/Flatfields/*.png

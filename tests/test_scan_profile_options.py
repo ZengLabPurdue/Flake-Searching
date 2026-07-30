@@ -27,6 +27,7 @@ from Scanning.region_classifier import (  # noqa: E402
 from Scanning.contour_finder import find_flakes  # noqa: E402
 from Scanning.contour_extractor import get_region_from_point  # noqa: E402
 from Scanning.scan_profile import (  # noqa: E402
+    CLASSIFICATION_RANGE,
     PROFILE_VERSION,
     ScanProfile,
 )
@@ -64,7 +65,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
         profile.classes.append(profile_class)
         return profile_class
 
-    def test_version_five_round_trip_persists_classes_and_profile_options(self):
+    def test_current_version_round_trip_persists_classes_and_profile_options(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = ScanProfile(directory)
             profile.set_size_requirement(4, 90)
@@ -89,6 +90,120 @@ class ScanProfileOptionsTests(unittest.TestCase):
             self.assertEqual(loaded.groups, ["hBN"])
             self.assertFalse(loaded.classes[0]["identify"])
             self.assertEqual(loaded.classes[0]["minimum_size_um"], 8.0)
+
+    def test_range_class_round_trip_needs_no_reference_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = ScanProfile(directory)
+            created = profile.set_range_class(
+                "Graphene range",
+                (-40, -30, -20),
+                (-10, 5, 15),
+                minimum_size_um=2,
+                maximum_size_um=80,
+                group="Graphene",
+            )
+
+            loaded = profile.save_profile("Ranges")
+            payload = json.loads(
+                (loaded.path / "profile.json").read_text(encoding="utf-8")
+            )
+            saved_class = payload["classes"][0]
+
+            self.assertEqual(created["classification_type"], CLASSIFICATION_RANGE)
+            self.assertEqual(saved_class["classification_type"], CLASSIFICATION_RANGE)
+            self.assertNotIn("source_image", saved_class)
+            self.assertNotIn("flood_fill", saved_class)
+            self.assertEqual(
+                saved_class["contrast_range_rgb"],
+                {
+                    "minimum": {"red": -40, "green": -30, "blue": -20},
+                    "maximum": {"red": -10, "green": 5, "blue": 15},
+                },
+            )
+            self.assertFalse((loaded.path / "images").exists())
+            self.assertEqual(
+                loaded.classes[0]["minimum_contrast_rgb"],
+                (-40, -30, -20),
+            )
+            self.assertIsNone(loaded.classes[0]["image_bgr"])
+
+    def test_range_matching_is_inclusive_on_all_rgb_channels(self):
+        profile = ScanProfile()
+        profile.set_range_class(
+            "Inclusive",
+            (-20, 0, 10),
+            (-5, 15, 30),
+        )
+        configured = profile.matching_configuration()["classes"]
+
+        minimum_match = match_profile_class(
+            np.asarray((-20, 0, 10), dtype=float),
+            configured,
+        )
+        maximum_match = match_profile_class(
+            np.asarray((-5, 15, 30), dtype=float),
+            configured,
+        )
+
+        self.assertEqual(minimum_match[1]["name"], "Inclusive")
+        self.assertEqual(maximum_match[1]["name"], "Inclusive")
+        self.assertIsNone(match_profile_class(
+            np.asarray((-21, 0, 10), dtype=float),
+            configured,
+        ))
+        self.assertIsNone(match_profile_class(
+            np.asarray((-10, 16, 20), dtype=float),
+            configured,
+        ))
+
+    def test_range_classes_copy_and_keep_identity_when_converted(self):
+        profile = ScanProfile()
+        sampled = self._add_class(profile, "Convertible", (1, 2, 3))
+
+        converted = profile.set_range_class(
+            "Convertible",
+            (-15, -10, -5),
+            (5, 10, 15),
+            index=0,
+        )
+        copied = profile.copy_class(0)
+
+        self.assertEqual(converted["id"], sampled["id"])
+        self.assertEqual(copied["classification_type"], CLASSIFICATION_RANGE)
+        self.assertEqual(copied["minimum_contrast_rgb"], (-15, -10, -5))
+        self.assertNotEqual(copied["id"], converted["id"])
+        self.assertEqual(copied["derived_from"]["class_id"], converted["id"])
+
+    def test_matching_loader_reads_range_classification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile.json"
+            profile_path.write_text(
+                json.dumps({
+                    "classes": [{
+                        "name": "Range",
+                        "classification_type": "range",
+                        "contrast_range_rgb": {
+                            "minimum": {"red": -30, "green": -20, "blue": -10},
+                            "maximum": {"red": 1, "green": 2, "blue": 3},
+                        },
+                        "identify": True,
+                        "size_requirement": None,
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            configured = load_profile_configuration(
+                profile_path,
+                contrast_threshold=0,
+            )["classes"][0]
+
+            self.assertEqual(configured["classification_type"], CLASSIFICATION_RANGE)
+            self.assertTrue(np.array_equal(
+                configured["minimum_contrast_rgb"],
+                (-30, -20, -10),
+            ))
+            self.assertNotIn("tolerance", configured)
 
     def test_version_two_profiles_default_to_identify(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -245,6 +360,46 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
         self.assertFalse(too_small["region_results"][0]["inside_profile_size"])
         self.assertIsNone(too_small["region_results"][0]["matched_class"])
+
+    def test_region_pipeline_classifies_with_a_contrast_range(self):
+        image = np.full((12, 12, 3), 100, dtype=np.uint8)
+        image[2:10, 2:10] = (120, 110, 105)
+        contour = np.asarray(
+            [[[2, 2]], [[9, 2]], [[9, 9]], [[2, 9]]],
+            dtype=np.int32,
+        )
+        range_class = {
+            "name": "Range",
+            "classification_type": CLASSIFICATION_RANGE,
+            "minimum_contrast_rgb": np.asarray((18, 8, 3), dtype=float),
+            "maximum_contrast_rgb": np.asarray((22, 12, 7), dtype=float),
+            "class_index": 0,
+            "group": "",
+            "identify": True,
+            "minimum_size_um": None,
+            "maximum_size_um": None,
+            "display_color_rgb": (255, 0, 0),
+        }
+
+        result = classify_contour_regions(
+            image,
+            np.zeros((12, 12), dtype=np.uint8),
+            [contour],
+            np.asarray([[-1, -1, -1, -1]], dtype=np.int32),
+            [contour],
+            [0],
+            {0: [0]},
+            [range_class],
+            2,
+        )["region_results"][0]
+
+        self.assertEqual(result["contrast_rgb"], (20, 10, 5))
+        self.assertEqual(result["matched_class"], "Range")
+        self.assertEqual(
+            result["matched_classification_type"],
+            CLASSIFICATION_RANGE,
+        )
+        self.assertIsNone(result["match_threshold"])
 
     def test_reference_and_runtime_flood_fill_are_color_connected(self):
         image_rgb = np.zeros((4, 6, 3), dtype=np.uint8)
