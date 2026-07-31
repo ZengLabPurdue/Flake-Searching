@@ -95,6 +95,100 @@ class CaptureAndStageSynchronizationTests(unittest.TestCase):
         self.assertEqual(position, (10, 0))
         self.assertEqual(candidate.last_confirmed_xy, (10, 0))
 
+    def test_z_wait_uses_tenth_micron_focus_tolerance(self):
+        candidate = Stage.__new__(Stage)
+        candidate.MOTION_POLL_INTERVAL_SECONDS = 0
+        candidate.Z_POSITION_TOLERANCE_UM = 0.05
+        candidate.POSITION_STABLE_SAMPLES = 3
+        positions = iter((0.5, 0.9, 1.0, 1.0, 1.0))
+        candidate.is_z_busy = lambda strict=False: False
+        candidate.get_z_position = lambda strict=False: next(positions)
+        candidate.get_z_limit_state = (
+            lambda strict=False: (False, False)
+        )
+        candidate.stop_all = lambda: None
+
+        position = candidate.wait_for_z_target(1.0, timeout=1)
+
+        self.assertEqual(position, 1.0)
+
+    def test_z_limit_state_decodes_prior_switch_bitmask(self):
+        candidate = Stage.__new__(Stage)
+        responses = iter(("0", "1", "2", "3", "bad"))
+        candidate.cmd = lambda _command: (0, next(responses))
+
+        self.assertEqual(
+            candidate.get_z_limit_state(strict=True),
+            (False, False),
+        )
+        self.assertEqual(
+            candidate.get_z_limit_state(strict=True),
+            (False, True),
+        )
+        self.assertEqual(
+            candidate.get_z_limit_state(strict=True),
+            (True, False),
+        )
+        self.assertEqual(
+            candidate.get_z_limit_state(strict=True),
+            (True, True),
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Could not read Z-axis physical limit",
+        ):
+            candidate.get_z_limit_state(strict=True)
+
+    def test_z_wait_stops_when_target_is_past_a_physical_limit(self):
+        candidate = Stage.__new__(Stage)
+        candidate.MOTION_POLL_INTERVAL_SECONDS = 0
+        candidate.Z_POSITION_TOLERANCE_UM = 0.05
+        candidate.POSITION_STABLE_SAMPLES = 3
+        candidate.is_z_busy = lambda strict=False: False
+        candidate.get_z_position = lambda strict=False: 5.0
+        candidate.get_z_limit_state = (
+            lambda strict=False: (False, True)
+        )
+        stop_calls = []
+        candidate.stop_z = lambda: stop_calls.append(True)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "positive physical limit",
+        ):
+            candidate.wait_for_z_target(10.0, timeout=1)
+
+        self.assertEqual(stop_calls, [True])
+
+    def test_z_move_rounds_to_controller_tenths(self):
+        candidate = Stage.__new__(Stage)
+        commands = []
+        candidate.is_busy = lambda: False
+        candidate.cmd = lambda command: (
+            commands.append(command) or (0, "")
+        )
+        candidate._note_motion_command = lambda: None
+
+        moved = candidate.move_to_z(1.26, wait=False)
+
+        self.assertTrue(moved)
+        self.assertEqual(
+            commands,
+            ["controller.z.goto-position 13"],
+        )
+
+    def test_get_z_acceleration_updates_z_cache(self):
+        candidate = Stage.__new__(Stage)
+        candidate.velocity = 123
+        candidate.z_acceleration = 456
+        candidate.cmd = lambda _command: (0, "789")
+
+        acceleration = candidate.get_z_acceleration()
+
+        self.assertEqual(acceleration, 789)
+        self.assertEqual(candidate.z_acceleration, 789)
+        self.assertEqual(candidate.velocity, 123)
+
     def test_strict_position_read_does_not_reuse_stale_coordinates(self):
         candidate = Stage.__new__(Stage)
         candidate.x = 12

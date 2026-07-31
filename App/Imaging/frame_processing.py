@@ -129,8 +129,15 @@ class FrameProcessor:
 
             self.last_processed_frame_id = data["frame_id"]
 
-            sharpness, _ = self.app.focus_controller.find_sharpness(img)
-            self.app.focus_panel.update_sharpness(sharpness)
+            focus_controller = self.app.focus_controller
+            is_focus_active = getattr(
+                focus_controller,
+                "is_focus_active",
+                lambda: False,
+            )
+            if not is_focus_active():
+                sharpness, _ = focus_controller.find_sharpness(img)
+                self.app.focus_panel.update_sharpness(sharpness)
 
             if self.get_live_mapping():
                 busy = self.stage.is_busy()
@@ -550,10 +557,15 @@ class FrameProcessor:
         return vignette_filter_path(
             self.app.get_magnification(),
             self.app.get_resolution(),
+            substrate=self.app.get_vignette_substrate(),
         )
 
     def load_vignette_filter(self, image_shape=None):
-        key = (self.app.get_magnification(), self.app.get_resolution())
+        key = (
+            self.app.get_magnification(),
+            self.app.get_vignette_substrate(),
+            self.app.get_resolution(),
+        )
         if (
             self.vignette_filter_key != key
             or self.vignette_filter is None
@@ -562,13 +574,15 @@ class FrameProcessor:
             path = self.get_vignette_filter_path()
             if not path.is_file():
                 raise FileNotFoundError(
-                    f"No vignette filter is available for {key[0]} at {key[1]} resolution.\n\n"
+                    f"No vignette filter is available for {key[0]} on "
+                    f"{key[1]} at {key[2]} resolution.\n\n"
                     f"Expected file:\n{path}"
                 )
             vignette_filter = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if vignette_filter is None:
                 raise FileNotFoundError(
-                    f"No vignette filter is available for {key[0]} at {key[1]} resolution.\n\n"
+                    f"No vignette filter is available for {key[0]} on "
+                    f"{key[1]} at {key[2]} resolution.\n\n"
                     f"Expected file:\n{path}"
                 )
             self.vignette_filter_key = key
@@ -652,6 +666,7 @@ class FrameProcessor:
                 "chip_filter_applied": bool(apply_chip_filter),
                 "magnification": self.app.get_magnification(),
                 "resolution": self.app.get_resolution(),
+                "vignette_substrate": self.app.get_vignette_substrate(),
             })
             image_metadata.save_png(
                 filepath,

@@ -78,11 +78,36 @@ class ObjectiveControlPanel:
         controls = tk.Frame(button_panel, bg="white")
         controls.pack(expand=True, fill="both")
 
-        self.btn1 = ttk.Button(controls, text="1", style="Custom.TButton")
-        self.btn2 = ttk.Button(controls, text="2", style="Custom.TButton")
-        self.btn3 = ttk.Button(controls, text="3", style="Custom.TButton")
-        self.btn4 = ttk.Button(controls, text="4", style="Custom.TButton")
-        self.btn5 = ttk.Button(controls, text="5", style="Custom.TButton")
+        self.btn1 = ttk.Button(
+            controls,
+            text="1",
+            style="Custom.TButton",
+            command=lambda: self.change_objective(1),
+        )
+        self.btn2 = ttk.Button(
+            controls,
+            text="2",
+            style="Custom.TButton",
+            command=lambda: self.change_objective(2),
+        )
+        self.btn3 = ttk.Button(
+            controls,
+            text="3",
+            style="Custom.TButton",
+            command=lambda: self.change_objective(3),
+        )
+        self.btn4 = ttk.Button(
+            controls,
+            text="4",
+            style="Custom.TButton",
+            command=lambda: self.change_objective(4),
+        )
+        self.btn5 = ttk.Button(
+            controls,
+            text="5",
+            style="Custom.TButton",
+            command=lambda: self.change_objective(5),
+        )
 
         self.objective_buttons = [
             self.btn1,
@@ -106,12 +131,6 @@ class ObjectiveControlPanel:
         self.btn3.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
         self.btn4.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
         self.btn5.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=2, pady=2)
-
-        self.btn1.bind("<ButtonPress-1>", lambda e: self.change_objective(1))
-        self.btn2.bind("<ButtonPress-1>", lambda e: self.change_objective(2))
-        self.btn3.bind("<ButtonPress-1>", lambda e: self.change_objective(3))
-        self.btn4.bind("<ButtonPress-1>", lambda e: self.change_objective(4))
-        self.btn5.bind("<ButtonPress-1>", lambda e: self.change_objective(5))
 
         return panel
     

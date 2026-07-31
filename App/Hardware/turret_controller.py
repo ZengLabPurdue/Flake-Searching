@@ -25,7 +25,24 @@ class TurretController:
             timeout=timeout,
         )
 
-    def change_objective(self, position, cancel_check=None):
+    def return_to_first_objective_and_focus(self):
+        """Leave the microscope on objective 1 with a completed autofocus."""
+        if self.get_position() == 1:
+            self.app.set_magnification("2X")
+            self.app.frame_processor.set_default_exposure()
+            self.start_auto_focus_thread()
+            return
+        self.change_objective(1)
+
+    def close(self):
+        self.turret.close()
+
+    def change_objective(
+        self,
+        position,
+        cancel_check=None,
+        autofocus=True,
+    ):
         objective_map = {
             1: ("2X", RELATIVE_XY["2X"]["X"], RELATIVE_XY["2X"]["Y"], RELATIVE_Z["2X"]),
             2: ("10X", RELATIVE_XY["10X"]["X"], RELATIVE_XY["10X"]["Y"], RELATIVE_Z["10X"]),
@@ -73,28 +90,15 @@ class TurretController:
                 cancel_check=cancel_check,
             )
 
+            # Autofocus selects its objective-specific range and motion
+            # profile from the app's active magnification.
+            self.app.set_magnification(magnification)
             self.app.frame_processor.set_default_exposure()
 
-            if position == 1:
-                self.start_auto_focus_thread(focus_range=500, z_velo=500, z_accel=10000, peak_found_threshold=100)
-
-            elif position == 2:
-                self.start_auto_focus_thread(focus_range=200, z_velo=50, z_accel=10000, peak_found_threshold=20)
-                pass
-
-            elif position == 3:
-                self.start_auto_focus_thread(focus_range=100, z_velo=25, z_accel=10000, peak_found_threshold=20)
-                pass
-
-            elif position == 4:
-                pass
-
-            elif position == 5:
+            if position == 5:
                 self.app.frame_processor.set_auto_exposure(True)
-                self.start_auto_focus_thread(focus_range=20, z_velo=5, z_accel=10000, peak_found_threshold=10)
-                pass
-
-            self.app.set_magnification(magnification)
+            if magnification is not None and autofocus:
+                self.start_auto_focus_thread()
 
         finally:
             self.app.enable_buttons()

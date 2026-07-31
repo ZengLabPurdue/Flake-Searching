@@ -1075,6 +1075,10 @@ def combined_class_regions(class_index_map, profile_classes, pixel_size_um=None)
                 "region_type": "combined",
                 "matched_class": profile_class["name"],
                 "matched_group": profile_class.get("group") or None,
+                "matched_classification_type": profile_class.get(
+                    "classification_type",
+                    CLASSIFICATION_SAMPLE,
+                ),
                 "matched_color_rgb": profile_class["display_color_rgb"],
                 "pixel_count": pixel_count,
                 "size_um": (

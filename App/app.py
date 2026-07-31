@@ -32,6 +32,11 @@ from UI.panels.camera_settings_panel import CameraSettingsPanel
 from UI.display_acceleration import DisplayResizer
 from Imaging.frame_processing import FrameProcessor
 from Imaging.focus import FocusController
+from Imaging.flatfield_storage import (
+    DEFAULT_VIGNETTE_SUBSTRATE,
+    VIGNETTE_SUBSTRATES,
+    normalize_vignette_substrate,
+)
 
 DLL_PATH = os.getcwd() + r"\Hardware\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
 PRIOR_COM_PORT = sys.argv[1]
@@ -46,6 +51,8 @@ class App:
         self._closing = False
         self._shutdown_requested = False
         self._focus_shutdown_started_at = None
+        self._shutdown_returning_to_objective = False
+        self._shutdown_focus_prepared = False
         self._map_render_job = None
         self._last_map_render = 0.0
         self._map_render_interval_ms = 125
@@ -92,6 +99,10 @@ class App:
         
         self.magnification = "2X"
         self.resolution = "HIGH"
+        self.vignette_substrate = DEFAULT_VIGNETTE_SUBSTRATE
+        self.vignette_substrate_var = tk.StringVar(
+            value=self.vignette_substrate
+        )
 
         self.buttons = []
         self.panels = []
@@ -184,6 +195,9 @@ class App:
             vignette_filter_var=self.camera_vignette_filter_var,
             chip_filter_callback=lambda: self.set_view("Camera View"),
             vignette_filter_callback=self.toggle_camera_vignette_filter,
+            vignette_substrate_var=self.vignette_substrate_var,
+            vignette_substrates=VIGNETTE_SUBSTRATES,
+            vignette_substrate_callback=self.set_vignette_substrate,
             operation_allowed=self.hardware_controls_available,
         )
 
@@ -715,12 +729,15 @@ class App:
         self.root.focus_set()
 
     def on_close(self):
+        if self._closing or self._shutdown_returning_to_objective:
+            return
+        shutdown_was_requested = self._shutdown_requested
+        self._shutdown_requested = True
         if (
             hasattr(self, "scan_manager")
             and self.scan_manager.is_scan_running()
         ):
-            if not self._shutdown_requested:
-                self._shutdown_requested = True
+            if not shutdown_was_requested:
                 self.scan_manager.stop_scan()
             self.root.after(50, self.on_close)
             return
@@ -742,6 +759,24 @@ class App:
                 return
             print("Shutdown warning: autofocus did not stop within 5 seconds.")
 
+        focus_shutdown_failed = (
+            focus_thread is not None and focus_thread.is_alive()
+        )
+        if not self._shutdown_focus_prepared and not focus_shutdown_failed:
+            self._shutdown_returning_to_objective = True
+            try:
+                print("Shutdown: returning to objective 1 and focusing...")
+                self.turret_controller.return_to_first_objective_and_focus()
+                print("Shutdown: objective 1 is focused.")
+            except Exception as error:
+                print(
+                    "Shutdown warning: could not return to objective 1 "
+                    f"and focus: {error}"
+                )
+            finally:
+                self._shutdown_returning_to_objective = False
+                self._shutdown_focus_prepared = True
+
         self._closing = True
         if self._ui_poll_job is not None:
             self.root.after_cancel(self._ui_poll_job)
@@ -753,6 +788,7 @@ class App:
             if hasattr(self, "view_scans_panel"):
                 self.view_scans_panel.shutdown()
             self.frame_processor.close()
+            self.turret_controller.close()
             self.stage.disconnect()
         except Exception as error:
             print(f"Shutdown warning: {error}")
@@ -919,6 +955,33 @@ class App:
     
     def set_resolution(self, resolution):
         self.resolution = resolution
+
+    def get_vignette_substrate(self):
+        return self.vignette_substrate
+
+    def get_vignette_substrate_var(self):
+        return self.vignette_substrate_var
+
+    def set_vignette_substrate(self, substrate):
+        substrate = normalize_vignette_substrate(substrate)
+        if substrate == self.vignette_substrate:
+            if threading.get_ident() == self._ui_thread_id:
+                self._sync_vignette_substrate_var(substrate)
+            return
+        self.vignette_substrate = substrate
+        if threading.get_ident() == self._ui_thread_id:
+            self._sync_vignette_substrate_var(substrate)
+        else:
+            self.call_on_ui_thread(
+                self._sync_vignette_substrate_var,
+                substrate,
+            )
+        if hasattr(self, "frame_processor"):
+            self.frame_processor.clear_vignette_filter_cache()
+
+    def _sync_vignette_substrate_var(self, substrate):
+        if self.vignette_substrate_var.get() != substrate:
+            self.vignette_substrate_var.set(substrate)
 
     def get_true_map(self):
         return self.true_map

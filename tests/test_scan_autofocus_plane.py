@@ -51,6 +51,22 @@ class _FakeFocusController:
         self.stop_focus_event = threading.Event()
         self.calls = []
 
+    @staticmethod
+    def autofocus_defaults(magnification=None):
+        profiles = {
+            "10X": {
+                "focus_range": 300.0,
+                "z_velo": 250,
+                "z_accel": 10000,
+            },
+            "20X": {
+                "focus_range": 200.0,
+                "z_velo": 150,
+                "z_accel": 8000,
+            },
+        }
+        return profiles[str(magnification).upper()]
+
     def auto_focus(self, **profile):
         x, y = self.stage.xy
         best_z = 35.0 + 0.012 * x - 0.007 * y
@@ -163,7 +179,7 @@ class ScanAutofocusPlaneTests(unittest.TestCase):
                 self.assertTrue(
                     all(
                         profile
-                        == manager.SCAN_AUTOFOCUS_PROFILES[magnification]
+                        == focus.autofocus_defaults(magnification)
                         for _x, _y, profile in focus.calls
                     )
                 )

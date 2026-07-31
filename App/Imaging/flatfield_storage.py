@@ -13,6 +13,8 @@ from config import HOME_DIR
 
 FLATFIELD_DIR = HOME_DIR / "Flatfields"
 FLATFIELD_BACKUP_DIR = HOME_DIR / "Calibration Backups" / "Flatfields"
+VIGNETTE_SUBSTRATES = ("100nm", "285nm_4in", "285nm_8in")
+DEFAULT_VIGNETTE_SUBSTRATE = VIGNETTE_SUBSTRATES[0]
 
 
 def _calibration_key(value, label):
@@ -22,18 +24,31 @@ def _calibration_key(value, label):
     return key
 
 
+def normalize_vignette_substrate(substrate):
+    substrate = _calibration_key(substrate, "Substrate")
+    if substrate not in VIGNETTE_SUBSTRATES:
+        supported = ", ".join(VIGNETTE_SUBSTRATES)
+        raise ValueError(
+            f"Unknown vignette substrate: {substrate}. "
+            f"Choose one of: {supported}."
+        )
+    return substrate
+
+
 def vignette_filter_path(
     magnification,
     resolution,
     *,
+    substrate=None,
     flatfield_dir=FLATFIELD_DIR,
 ):
     magnification = _calibration_key(magnification, "Magnification")
     resolution = _calibration_key(resolution, "Resolution")
-    return (
-        Path(flatfield_dir)
-        / f"vignette_filter_{magnification}_{resolution}.png"
-    )
+    filename_parts = ["vignette_filter", magnification]
+    if substrate is not None:
+        filename_parts.append(normalize_vignette_substrate(substrate))
+    filename_parts.append(resolution)
+    return Path(flatfield_dir) / f"{'_'.join(filename_parts)}.png"
 
 
 def save_vignette_filter(
@@ -41,6 +56,7 @@ def save_vignette_filter(
     magnification,
     resolution,
     *,
+    substrate=None,
     flatfield_dir=FLATFIELD_DIR,
     backup_dir=FLATFIELD_BACKUP_DIR,
     timestamp=None,
@@ -52,6 +68,7 @@ def save_vignette_filter(
     save_path = vignette_filter_path(
         magnification,
         resolution,
+        substrate=substrate,
         flatfield_dir=flatfield_dir,
     )
     save_path.parent.mkdir(parents=True, exist_ok=True)

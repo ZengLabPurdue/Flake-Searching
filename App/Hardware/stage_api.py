@@ -7,6 +7,10 @@ class stage:
     DEFAULT_WAIT_TIMEOUT_SECONDS = 120
     MOTION_POLL_INTERVAL_SECONDS = 0.01
     POSITION_TOLERANCE_UM = 1.0
+    # Z commands and feedback use controller tenths.  Half a controller step
+    # accepts a rounded target without treating an adjacent 0.1 um position as
+    # equivalent at 100X.
+    Z_POSITION_TOLERANCE_UM = 0.05
     POSITION_STABLE_SAMPLES = 3
 
     def __init__(self, port_num, sdk_path):
@@ -229,10 +233,37 @@ class stage:
             self._check_wait_cancelled(cancel_check)
             busy = self.is_z_busy(strict=True)
             current_z = self.get_z_position(strict=True)
+            negative_limit, positive_limit = self.get_z_limit_state(
+                strict=True
+            )
             at_target = (
                 abs(current_z - target_z)
-                <= self.POSITION_TOLERANCE_UM
+                <= self.Z_POSITION_TOLERANCE_UM + 1e-9
             )
+            moving_past_negative_limit = (
+                negative_limit
+                and target_z
+                < current_z - self.Z_POSITION_TOLERANCE_UM
+            )
+            moving_past_positive_limit = (
+                positive_limit
+                and target_z
+                > current_z + self.Z_POSITION_TOLERANCE_UM
+            )
+            if moving_past_negative_limit or moving_past_positive_limit:
+                try:
+                    self.stop_z()
+                except Exception:
+                    pass
+                direction = (
+                    "negative"
+                    if moving_past_negative_limit
+                    else "positive"
+                )
+                raise RuntimeError(
+                    f"Z axis reached its {direction} physical limit "
+                    f"before target {target_z:g}."
+                )
 
             if not busy and at_target:
                 stable_samples += 1
@@ -334,6 +365,29 @@ class stage:
         self.z = z
         return self.z
 
+    def get_z_limit_state(self, strict=False):
+        """Return (negative_limit, positive_limit) physical switch states."""
+        return_code, response = self.cmd("controller.z.limits.get")
+        if isinstance(response, str):
+            response = response.strip()
+        try:
+            numeric_bits = float(response)
+            limit_bits = int(numeric_bits)
+            if (
+                return_code
+                or numeric_bits != limit_bits
+                or not 0 <= limit_bits <= 3
+            ):
+                raise ValueError("invalid Z limit bitmask")
+        except (TypeError, ValueError) as exc:
+            if strict:
+                raise RuntimeError(
+                    "Could not read Z-axis physical limit switches: "
+                    f"{response!r}"
+                ) from exc
+            return False, False
+        return bool(limit_bits & 0b10), bool(limit_bits & 0b01)
+
     # ---------------- Absolute Movement ----------------
 
     def move_to_xy(
@@ -378,7 +432,7 @@ class stage:
         if self.is_busy():
             return False
 
-        z_prior_units = int(float(z) * 10)
+        z_prior_units = int(round(float(z) * 10))
         return_code, response = self.cmd(
             f"controller.z.goto-position {z_prior_units}"
         )
@@ -500,8 +554,8 @@ class stage:
 
     def get_z_acceleration(self):
         _, response = self.cmd("controller.z.acc.get")
-        self.velocity = int(float(response))
-        return self.velocity
+        self.z_acceleration = int(float(response))
+        return self.z_acceleration
 
     # ---------------- Origin / Backlash ----------------
 

@@ -26,6 +26,7 @@ from time import perf_counter
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -44,8 +45,11 @@ APP_CLASSIFIER_IMPLEMENTATION_PATH = Path(_app_region_classifier.__file__).resol
 GR_BASE_PROFILE_PATH = (
     APP_DIRECTORY / "Profiles" / "Gr_Base_Profile" / "profile.json"
 )
+PROFILES_DIRECTORY = APP_DIRECTORY / "Profiles"
 DEFAULT_GR_PIXEL_SIZE_UM = float(PIXEL_SIZE["10X"]["HIGH"])
-IDENTIFIED_POINT_COLOR = "#ff00ff"
+RANGE_BOX_ALPHA = 0.20
+RANGE_BOX_EDGE_ALPHA = 0.70
+REGION_POINT_EDGE_WIDTH = 0.15
 SUPPORTED_IMAGE_SUFFIXES = {
     ".bmp",
     ".jpeg",
@@ -111,25 +115,39 @@ def _set_equal_contrast_limits(axis, contrast_sets) -> None:
     axis.set_box_aspect((1, 1, 1))
 
 
-def _plot_contrast_range_box(axis, minimum, maximum) -> np.ndarray:
-    """Draw the inclusive RGB contrast volume and return its eight corners."""
+def _profile_class_plot_color(profile_class, generated_colors):
+    color = profile_class.get("display_color_rgb")
+    if color is None:
+        color = generated_colors[profile_class["name"]]
+    color = np.asarray(color, dtype=np.float64)
+    if np.max(color) > 1.0:
+        color /= 255.0
+    return np.clip(color, 0.0, 1.0)
+
+
+def _plot_contrast_range_box(axis, minimum, maximum, color) -> np.ndarray:
+    """Draw a translucent inclusive RGB contrast volume and return its corners."""
     corners = np.asarray([
         (red, green, blue)
         for red in (minimum[0], maximum[0])
         for green in (minimum[1], maximum[1])
         for blue in (minimum[2], maximum[2])
     ], dtype=np.float64)
-    for first in range(len(corners)):
-        for second in range(first + 1, len(corners)):
-            if np.count_nonzero(corners[first] != corners[second]) == 1:
-                axis.plot(
-                    corners[[first, second], 0],
-                    corners[[first, second], 1],
-                    corners[[first, second], 2],
-                    color="black",
-                    linewidth=1.0,
-                    alpha=0.55,
-                )
+    faces = [
+        corners[[0, 1, 3, 2]],
+        corners[[4, 5, 7, 6]],
+        corners[[0, 1, 5, 4]],
+        corners[[2, 3, 7, 6]],
+        corners[[0, 2, 6, 4]],
+        corners[[1, 3, 7, 5]],
+    ]
+    volume = Poly3DCollection(
+        faces,
+        facecolors=[(*color, RANGE_BOX_ALPHA)],
+        edgecolors=[(*color, RANGE_BOX_EDGE_ALPHA)],
+        linewidths=1.0,
+    )
+    axis.add_collection3d(volume)
     return corners
 
 
@@ -144,10 +162,10 @@ def plot_contour_contrasts_3d(
 ):
     """Plot all classified regions in signed RGB-contrast space.
 
-    Unmatched circles use each region's measured average RGB color. Every
-    class-identified region is a vivid magenta star, making class membership
-    visible without a plot legend. Hollow diamonds mark sampled class
-    references, while wireframe boxes show contrast range classes.
+    Every region is a circle using its measured average RGB color, regardless
+    of whether it matched a class. Hollow diamonds mark sampled class
+    references, while translucent class-colored boxes show contrast range
+    classes.
     """
     regions = list(region_results)
     configuration = profile_configuration or {"classes": []}
@@ -165,37 +183,30 @@ def plot_contour_contrasts_3d(
 
     figure = plt.figure(figsize=(11, 8.5))
     axis = figure.add_subplot(111, projection="3d")
-    category_styles = {
-        "unmatched": {"marker": "o", "size": 24, "linewidth": 0.35},
-        "identified": {"marker": "*", "size": 105, "linewidth": 0.9},
-    }
-    for category in ("unmatched", "identified"):
-        selected = categories == category
-        if not np.any(selected):
-            continue
-        style = category_styles[category]
-        colors = (
-            IDENTIFIED_POINT_COLOR
-            if category == "identified"
-            else point_colors[selected]
-        )
+    if regions:
         axis.scatter(
-            contrasts[selected, 0],
-            contrasts[selected, 1],
-            contrasts[selected, 2],
-            c=colors,
-            marker=style["marker"],
-            s=style["size"],
+            contrasts[:, 0],
+            contrasts[:, 1],
+            contrasts[:, 2],
+            c=point_colors,
+            marker="o",
+            s=24,
             edgecolors="black",
-            linewidths=style["linewidth"],
+            linewidths=REGION_POINT_EDGE_WIDTH,
             depthshade=False,
-            label=category.title(),
+            label="Contour regions",
         )
 
+    profile_classes = list(configuration.get("classes", ()))
+    generated_colors = _app_region_classifier.generate_class_colors(
+        profile_classes,
+        color_seed=0,
+    )
     reference_contrasts = []
-    for profile_class in configuration.get("classes", ()):
+    for profile_class in profile_classes:
         if not profile_class.get("identify", True):
             continue
+        class_color = _profile_class_plot_color(profile_class, generated_colors)
         classification_type = profile_class.get("classification_type", "sample")
         if classification_type == "range":
             minimum = np.asarray(
@@ -206,7 +217,12 @@ def plot_contour_contrasts_3d(
                 profile_class["maximum_contrast_rgb"],
                 dtype=np.float64,
             )
-            corners = _plot_contrast_range_box(axis, minimum, maximum)
+            corners = _plot_contrast_range_box(
+                axis,
+                minimum,
+                maximum,
+                class_color,
+            )
             reference_contrasts.extend(corners)
             contrast = (minimum + maximum) / 2.0
             axis.scatter(
@@ -216,7 +232,7 @@ def plot_contour_contrasts_3d(
                 marker="s",
                 s=90,
                 facecolors="none",
-                edgecolors="black",
+                edgecolors=[class_color],
                 linewidths=1.3,
                 depthshade=False,
             )
@@ -231,7 +247,7 @@ def plot_contour_contrasts_3d(
                 marker="D",
                 s=115,
                 facecolors="none",
-                edgecolors="black",
+                edgecolors=[class_color],
                 linewidths=1.5,
                 depthshade=False,
             )
@@ -276,7 +292,7 @@ def plot_contour_contrasts_3d(
         "Contour-region RGB contrasts\n"
         f"{len(regions):,} total | {counts['identified']:,} identified | "
         f"{counts['unmatched']:,} unmatched"
-        f"{timing}\nMagenta stars are class-identified regions"
+        f"{timing}"
     )
     figure.tight_layout()
 
@@ -389,6 +405,113 @@ def _choose_image_path() -> Path | None:
     return Path(selected) if selected else None
 
 
+def _discover_profile_paths(profiles_directory=PROFILES_DIRECTORY) -> list[Path]:
+    profiles_directory = Path(profiles_directory)
+    if not profiles_directory.is_dir():
+        return []
+    return sorted(
+        (
+            profile_path
+            for profile_path in profiles_directory.glob("*/profile.json")
+            if profile_path.is_file()
+        ),
+        key=lambda profile_path: profile_path.parent.name.casefold(),
+    )
+
+
+def _choose_profile_path(default_profile=None) -> Path | None:
+    import tkinter as tk
+    from tkinter import filedialog, ttk
+
+    profile_paths = _discover_profile_paths()
+    labels_to_paths = {
+        profile_path.parent.name: profile_path
+        for profile_path in profile_paths
+    }
+    default_profile = Path(default_profile).resolve() if default_profile else None
+    default_label = next(
+        (
+            label
+            for label, profile_path in labels_to_paths.items()
+            if profile_path.resolve() == default_profile
+        ),
+        next(iter(labels_to_paths), ""),
+    )
+
+    root = tk.Tk()
+    root.title("Choose a Scan Profile")
+    root.resizable(False, False)
+    selected_label = tk.StringVar(value=default_label)
+    result = {"path": None}
+
+    frame = ttk.Frame(root, padding=14)
+    frame.grid(row=0, column=0, sticky="nsew")
+    ttk.Label(
+        frame,
+        text="Profile used for classification and the 3D range display:",
+    ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+    profile_combo = ttk.Combobox(
+        frame,
+        textvariable=selected_label,
+        values=list(labels_to_paths),
+        state="readonly",
+        width=38,
+    )
+    profile_combo.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+
+    def use_selected_profile():
+        selected_path = labels_to_paths.get(selected_label.get())
+        if selected_path is not None:
+            result["path"] = selected_path
+            root.destroy()
+
+    def browse_for_profile():
+        selected_path = filedialog.askopenfilename(
+            parent=root,
+            title="Choose a Scan Profile",
+            initialdir=PROFILES_DIRECTORY,
+            filetypes=[
+                ("Scan profile", "profile.json"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+        if selected_path:
+            result["path"] = Path(selected_path)
+            root.destroy()
+
+    def use_without_profile():
+        result["path"] = None
+        root.destroy()
+
+    use_button = ttk.Button(
+        frame,
+        text="Use Profile",
+        command=use_selected_profile,
+    )
+    use_button.grid(row=2, column=0, padx=(0, 8))
+    ttk.Button(
+        frame,
+        text="Browse…",
+        command=browse_for_profile,
+    ).grid(row=2, column=1, padx=(0, 8))
+    ttk.Button(
+        frame,
+        text="No Profile",
+        command=use_without_profile,
+    ).grid(row=2, column=2)
+
+    if not labels_to_paths:
+        profile_combo.configure(state="disabled")
+        use_button.configure(state="disabled")
+    root.bind("<Return>", lambda _event: use_selected_profile())
+    root.bind("<Escape>", lambda _event: use_without_profile())
+    root.protocol("WM_DELETE_WINDOW", use_without_profile)
+    profile_combo.focus_set()
+    root.mainloop()
+    return result["path"]
+
+
 def _pixel_size_for_image(image_path, override=None) -> float:
     if override is not None:
         return float(override)
@@ -402,7 +525,6 @@ def _pixel_size_for_image(image_path, override=None) -> float:
 
 
 def _argument_parser() -> argparse.ArgumentParser:
-    default_profile = GR_BASE_PROFILE_PATH
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark the App contour classifier and plot every region in "
@@ -418,10 +540,11 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--profile",
         type=Path,
-        default=default_profile if default_profile.is_file() else None,
+        default=None,
         help=(
             "Profile JSON or profile directory "
-            "(default: App/Profiles/Gr_Base_Profile)."
+            "(interactive runs prompt; otherwise the default is "
+            "App/Profiles/Gr_Base_Profile)."
         ),
     )
     parser.add_argument("--edge-threshold", type=float, default=10)
@@ -478,6 +601,17 @@ def main(argv=None) -> int:
         return 1
     image_path = image_path.resolve()
     profile_path = arguments.profile
+    if profile_path is None:
+        default_profile = (
+            GR_BASE_PROFILE_PATH
+            if GR_BASE_PROFILE_PATH.is_file()
+            else None
+        )
+        profile_path = (
+            _choose_profile_path(default_profile)
+            if not arguments.no_show
+            else default_profile
+        )
     if profile_path is not None:
         profile_path = profile_path.resolve()
         if not profile_path.exists():

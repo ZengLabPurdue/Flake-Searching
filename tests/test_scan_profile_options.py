@@ -19,6 +19,7 @@ from Scanning.region_classifier import (  # noqa: E402
     _flood_fill_region,
     classify_contour_regions,
     combined_class_regions,
+    create_classified_image,
     draw_class_legend,
     draw_region_area_labels,
     load_profile_configuration,
@@ -400,6 +401,31 @@ class ScanProfileOptionsTests(unittest.TestCase):
             CLASSIFICATION_RANGE,
         )
         self.assertIsNone(result["match_threshold"])
+
+    def test_range_classification_uses_the_class_colored_region_mask(self):
+        external_mask = np.zeros((7, 7), dtype=np.uint8)
+        external_mask[1:6, 1:6] = 255
+        class_index_map = np.zeros((7, 7), dtype=np.int32)
+        class_index_map[2:5, 3] = 1
+        class_index_map[4, 2:5] = 1
+        range_class = {
+            "classification_type": CLASSIFICATION_RANGE,
+            "class_index": 0,
+            "identify": True,
+            "display_color_rgb": (12, 34, 56),
+        }
+
+        classified = create_classified_image(
+            (7, 7, 3),
+            external_mask,
+            class_index_map,
+            [range_class],
+        )
+
+        expected_region = class_index_map == 1
+        self.assertTrue(np.all(classified[expected_region] == (12, 34, 56)))
+        self.assertTrue(np.all(classified[1:6, 1:6][~expected_region[1:6, 1:6]] == 255))
+        self.assertTrue(np.all(classified[external_mask == 0] == 0))
 
     def test_reference_and_runtime_flood_fill_are_color_connected(self):
         image_rgb = np.zeros((4, 6, 3), dtype=np.uint8)

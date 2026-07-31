@@ -11,8 +11,9 @@ import numpy as np
 APP_DIR = Path(__file__).resolve().parents[1] / "App"
 sys.path.insert(0, str(APP_DIR))
 
-from Imaging import vignetting_corrector  # noqa: E402
+from Imaging import image_metadata, vignetting_corrector  # noqa: E402
 from Imaging.flatfield_storage import (  # noqa: E402
+    VIGNETTE_SUBSTRATES,
     save_vignette_filter,
     vignette_filter_path,
 )
@@ -24,6 +25,14 @@ class _FakeApp:
     def get_magnification():
         return "2X"
 
+    @staticmethod
+    def get_resolution():
+        return "HIGH"
+
+    @staticmethod
+    def get_vignette_substrate():
+        return "285nm_8in"
+
 
 class VignettingCorrectionTests(unittest.TestCase):
     def test_replacing_flatfield_preserves_previous_calibration_in_backup(self):
@@ -34,6 +43,7 @@ class VignettingCorrectionTests(unittest.TestCase):
             active_path = vignette_filter_path(
                 "10X",
                 "HIGH",
+                substrate="100nm",
                 flatfield_dir=flatfield_dir,
             )
             active_path.parent.mkdir(parents=True)
@@ -45,6 +55,7 @@ class VignettingCorrectionTests(unittest.TestCase):
                 replacement,
                 "10X",
                 "HIGH",
+                substrate="100nm",
                 flatfield_dir=flatfield_dir,
                 backup_dir=backup_dir,
                 timestamp=datetime(2026, 7, 29, 12, 34, 56, 789),
@@ -53,7 +64,7 @@ class VignettingCorrectionTests(unittest.TestCase):
             self.assertEqual(saved_path, active_path)
             self.assertEqual(
                 backup_path.name,
-                "vignette_filter_10x_high_20260729_123456_000789.png",
+                "vignette_filter_10x_100nm_high_20260729_123456_000789.png",
             )
             np.testing.assert_array_equal(
                 cv2.imread(str(saved_path), cv2.IMREAD_COLOR),
@@ -85,9 +96,103 @@ class VignettingCorrectionTests(unittest.TestCase):
             self.assertIsNone(backup_path)
             self.assertFalse((root / "backups").exists())
 
+    def test_substrate_specific_filename_uses_supported_substrate_names(self):
+        self.assertEqual(
+            VIGNETTE_SUBSTRATES,
+            ("100nm", "285nm_4in", "285nm_8in"),
+        )
+        path = vignette_filter_path(
+            "10X",
+            "HIGH",
+            substrate="285nm_4in",
+        )
+        self.assertEqual(
+            path.name,
+            "vignette_filter_10x_285nm_4in_high.png",
+        )
+
+    def test_substrate_specific_save_does_not_replace_another_substrate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            flatfield_dir = root / "active"
+            four_inch_path = vignette_filter_path(
+                "10X",
+                "HIGH",
+                substrate="285nm_4in",
+                flatfield_dir=flatfield_dir,
+            )
+            eight_inch_path = vignette_filter_path(
+                "10X",
+                "HIGH",
+                substrate="285nm_8in",
+                flatfield_dir=flatfield_dir,
+            )
+            four_inch_path.parent.mkdir(parents=True)
+            four_inch = np.full((3, 4, 3), 40, dtype=np.uint8)
+            eight_inch = np.full((3, 4, 3), 80, dtype=np.uint8)
+            replacement = np.full((3, 4, 3), 120, dtype=np.uint8)
+            self.assertTrue(cv2.imwrite(str(four_inch_path), four_inch))
+            self.assertTrue(cv2.imwrite(str(eight_inch_path), eight_inch))
+
+            saved_path, _backup_path = save_vignette_filter(
+                replacement,
+                "10X",
+                "HIGH",
+                substrate="285nm_4in",
+                flatfield_dir=flatfield_dir,
+                backup_dir=root / "backups",
+            )
+
+            self.assertEqual(saved_path, four_inch_path)
+            np.testing.assert_array_equal(
+                cv2.imread(str(saved_path), cv2.IMREAD_COLOR),
+                replacement,
+            )
+            np.testing.assert_array_equal(
+                cv2.imread(str(eight_inch_path), cv2.IMREAD_COLOR),
+                eight_inch,
+            )
+
     def test_flatfield_filename_rejects_path_traversal(self):
         with self.assertRaises(ValueError):
             vignette_filter_path("../10X", "HIGH")
+
+    def test_flatfield_filename_rejects_unknown_substrate(self):
+        with self.assertRaisesRegex(ValueError, "Unknown vignette substrate"):
+            vignette_filter_path(
+                "10X",
+                "HIGH",
+                substrate="glass",
+            )
+
+    def test_frame_processor_looks_up_the_selected_substrate(self):
+        processor = FrameProcessor.__new__(FrameProcessor)
+        processor.app = _FakeApp()
+
+        path = processor.get_vignette_filter_path()
+
+        self.assertEqual(
+            path.name,
+            "vignette_filter_2x_285nm_8in_high.png",
+        )
+
+    def test_saved_png_records_the_selected_vignette_substrate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            processor = FrameProcessor.__new__(FrameProcessor)
+            processor.app = _FakeApp()
+            image = np.full((3, 4, 3), 100, dtype=np.uint8)
+
+            path = processor.save_image(
+                image=image,
+                save_dir=directory,
+                filename="capture.png",
+            )
+            metadata = image_metadata.read_png_metadata(path)
+
+            self.assertEqual(
+                metadata["vignette_substrate"],
+                "285nm_8in",
+            )
 
     def test_per_channel_gain_removes_spatial_color_cast(self):
         flatfield = np.array(

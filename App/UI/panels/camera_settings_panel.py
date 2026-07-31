@@ -16,6 +16,9 @@ class CameraSettingsPanel:
         vignette_filter_var=None,
         chip_filter_callback=None,
         vignette_filter_callback=None,
+        vignette_substrate_var=None,
+        vignette_substrates=None,
+        vignette_substrate_callback=None,
         operation_allowed=None,
     ):
         self.parent = parent
@@ -34,6 +37,13 @@ class CameraSettingsPanel:
         )
         self.chip_filter_callback = chip_filter_callback
         self.vignette_filter_callback = vignette_filter_callback
+        self.vignette_substrate_var = (
+            vignette_substrate_var
+            if vignette_substrate_var is not None
+            else tk.StringVar()
+        )
+        self.vignette_substrates = tuple(vignette_substrates or ())
+        self.vignette_substrate_callback = vignette_substrate_callback
         self.operation_allowed = operation_allowed or (lambda: True)
         self._hardware_enabled = True
 
@@ -49,7 +59,7 @@ class CameraSettingsPanel:
             self.parent,
             bg="#f0f0f0",
             width=204,
-            height=308,
+            height=376,
         )
         frame.place(relx=1.0, rely=0.0, anchor="ne")
 
@@ -57,7 +67,7 @@ class CameraSettingsPanel:
             frame,
             bg="white",
             width=200,
-            height=306,
+            height=374,
         )
         background.place(x=2, y=0)
 
@@ -160,6 +170,34 @@ class CameraSettingsPanel:
             self.change_resolution,
         )
 
+        substrate_header = Label(
+            background,
+            text="Substrate Mode",
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        substrate_header.place(relx=0.5, y=215, anchor="n")
+
+        self.vignette_substrate_dropdown = ttk.Combobox(
+            background,
+            textvariable=self.vignette_substrate_var,
+            values=self.vignette_substrates,
+            state="readonly",
+            width=18,
+            font=("TkDefaultFont", 8),
+        )
+        self.vignette_substrate_dropdown.place(
+            relx=0.5,
+            y=255,
+            anchor="center",
+            width=184,
+        )
+        self.vignette_substrate_dropdown.bind(
+            "<<ComboboxSelected>>",
+            self.change_vignette_substrate,
+        )
+
         filter_header = Label(
             background,
             text="Image Filters",
@@ -167,7 +205,7 @@ class CameraSettingsPanel:
             fg="black",
             font=("TkDefaultFont", 10, "bold"),
         )
-        filter_header.place(relx=0.5, y=220, anchor="n")
+        filter_header.place(relx=0.5, y=285, anchor="n")
 
         self.chip_filter_checkbox = ttk.Checkbutton(
             background,
@@ -176,7 +214,7 @@ class CameraSettingsPanel:
             command=self.chip_filter_callback,
             style="CameraSettings.TCheckbutton",
         )
-        self.chip_filter_checkbox.place(relx=0.5, y=255, anchor="center")
+        self.chip_filter_checkbox.place(relx=0.5, y=320, anchor="center")
 
         self.vignette_filter_checkbox = ttk.Checkbutton(
             background,
@@ -185,7 +223,7 @@ class CameraSettingsPanel:
             command=self.vignette_filter_callback,
             style="CameraSettings.TCheckbutton",
         )
-        self.vignette_filter_checkbox.place(relx=0.5, y=282, anchor="center")
+        self.vignette_filter_checkbox.place(relx=0.5, y=347, anchor="center")
 
         return frame
 
@@ -201,9 +239,11 @@ class CameraSettingsPanel:
         if self._hardware_enabled:
             self.auto_exposure_checkbox.state(["!disabled"])
             self.resolution_dropdown.state(["!disabled", "readonly"])
+            self.vignette_substrate_dropdown.state(["!disabled", "readonly"])
         else:
             self.auto_exposure_checkbox.state(["disabled"])
             self.resolution_dropdown.state(["disabled"])
+            self.vignette_substrate_dropdown.state(["disabled"])
         self.set_slider_enabled(
             self._hardware_enabled and self.auto_exposure_var.get()
         )
@@ -257,3 +297,11 @@ class CameraSettingsPanel:
             return
 
         self.change_resolution_callback(selected_resolution)
+
+    def change_vignette_substrate(self, event=None):
+        if not self.operation_allowed():
+            return
+        if self.vignette_substrate_callback is not None:
+            self.vignette_substrate_callback(
+                self.vignette_substrate_var.get()
+            )

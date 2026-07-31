@@ -138,6 +138,32 @@ class ScanStageRestoreTests(unittest.TestCase):
         self.assertEqual(stage.moves, [(120, 340, True)])
         self.assertEqual(statuses[-1]["stage"], "Stopped")
 
+    def test_vignette_scan_routes_the_selected_substrate(self):
+        manager, _stage, _frame_processor, _statuses = self._manager()
+        received = {}
+        manager.create_vignette_filter = (
+            lambda **options: received.update(options)
+        )
+
+        completed = manager.run_scan(
+            "Vignette Filter",
+            window=(2, 3),
+            vignette_substrate="285nm_8in",
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(
+            received,
+            {
+                "window": (2, 3),
+                "substrate": "285nm_8in",
+            },
+        )
+        self.assertEqual(
+            manager.scan_metadata["vignette_substrate"],
+            "285nm_8in",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

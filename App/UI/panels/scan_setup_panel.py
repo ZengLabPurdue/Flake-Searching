@@ -4,6 +4,10 @@ import tkinter as tk
 from tkinter import Frame, Label, filedialog, messagebox
 from tkinter import ttk
 
+from Imaging.flatfield_storage import (
+    DEFAULT_VIGNETTE_SUBSTRATE,
+    VIGNETTE_SUBSTRATES,
+)
 from Scanning.scan_profile import PROFILE_FILENAME, ScanProfile, ScanProfileError
 
 
@@ -20,12 +24,12 @@ class ScanSetupPanel:
     FULL_SCAN_TYPES = {"Complete Scan (1 Chip)", "Full Stage Scan"}
     DETECTION_SCAN_TYPES = FULL_SCAN_TYPES | {"100x Scan"}
     MATERIALS = ("Gr", "hBN", "MoS2", "MoTe2", "WS2", "WSe2")
-    SUBSTRATE_THICKNESSES = ("100nm", "285nm")
+    SUBSTRATE_THICKNESSES = VIGNETTE_SUBSTRATES
     FULL_SCAN_MAGNIFICATIONS = ("10x", "20x")
     DETECTION_MODELS = ("Region Detection", "Flake Detection")
 
     DEFAULT_MATERIAL = "Gr"
-    DEFAULT_SUBSTRATE = "285nm"
+    DEFAULT_SUBSTRATE = DEFAULT_VIGNETTE_SUBSTRATE
 
     def __init__(
         self,
@@ -48,7 +52,17 @@ class ScanSetupPanel:
         self.window_width_var = tk.StringVar()
         self.window_height_var = tk.StringVar()
         self.material_var = tk.StringVar(value=self.DEFAULT_MATERIAL)
-        self.substrate_var = tk.StringVar(value=self.DEFAULT_SUBSTRATE)
+        get_vignette_substrate_var = getattr(
+            self.app,
+            "get_vignette_substrate_var",
+            None,
+        )
+        self.substrate_var = (
+            get_vignette_substrate_var()
+            if get_vignette_substrate_var is not None
+            else tk.StringVar(value=DEFAULT_VIGNETTE_SUBSTRATE)
+        )
+        self.vignette_substrate_var = self.substrate_var
         self.full_scan_magnification_var = tk.StringVar(
             value=self.FULL_SCAN_MAGNIFICATIONS[0]
         )
@@ -116,7 +130,7 @@ class ScanSetupPanel:
             self.background,
             bg="white",
             width=184,
-            height=100,
+            height=86,
         )
         Label(
             self.window_controls,
@@ -163,6 +177,37 @@ class ScanSetupPanel:
         )
         self._build_full_scan_controls()
 
+        self.vignette_substrate_controls = Frame(
+            self.background,
+            bg="white",
+            width=184,
+            height=52,
+        )
+        Label(
+            self.vignette_substrate_controls,
+            text="Substrate mode",
+            bg="white",
+            fg="black",
+        ).place(x=0, y=0)
+        self.vignette_substrate_dropdown = ttk.Combobox(
+            self.vignette_substrate_controls,
+            textvariable=self.vignette_substrate_var,
+            values=VIGNETTE_SUBSTRATES,
+            state="readonly",
+            width=21,
+            font=("TkDefaultFont", 8),
+        )
+        self.vignette_substrate_dropdown.place(
+            relx=0.5,
+            y=22,
+            anchor="n",
+            width=184,
+        )
+        self.vignette_substrate_dropdown.bind(
+            "<<ComboboxSelected>>",
+            self._on_vignette_substrate_changed,
+        )
+
         self.run_button = ttk.Button(
             self.background,
             text="Run Scan",
@@ -190,7 +235,7 @@ class ScanSetupPanel:
 
         Label(
             self.full_scan_controls,
-            text="Substrate thickness",
+            text="Substrate mode",
             bg="white",
             fg="black",
         ).place(x=0, y=54)
@@ -203,6 +248,10 @@ class ScanSetupPanel:
             font=("TkDefaultFont", 8),
         )
         self.substrate_dropdown.place(relx=0.5, y=76, anchor="n", width=184)
+        self.substrate_dropdown.bind(
+            "<<ComboboxSelected>>",
+            self._on_vignette_substrate_changed,
+        )
 
         Label(
             self.full_scan_controls,
@@ -278,6 +327,7 @@ class ScanSetupPanel:
         scan_type = self.scan_type_var.get()
         self.window_controls.place_forget()
         self.full_scan_controls.place_forget()
+        self.vignette_substrate_controls.place_forget()
 
         if scan_type in self.DETECTION_SCAN_TYPES:
             self.full_scan_controls.place(relx=0.5, y=102, anchor="n")
@@ -285,13 +335,30 @@ class ScanSetupPanel:
             default_window = self.scan_manager.DEFAULT_WINDOWS[scan_type]
             self.window_width_var.set(str(default_window[0]))
             self.window_height_var.set(str(default_window[1]))
-            self.window_controls.place(relx=0.5, y=105, anchor="n")
-            self.frame.configure(height=257)
-            self.background.configure(height=255)
-            self.run_button.place(relx=0.5, y=214, anchor="n")
+            self.window_controls.place(relx=0.5, y=92, anchor="n")
+            if scan_type == "Vignette Filter":
+                self.vignette_substrate_controls.place(
+                    relx=0.5,
+                    y=187,
+                    anchor="n",
+                )
+                self.frame.configure(height=288)
+                self.background.configure(height=286)
+                self.run_button.place(relx=0.5, y=245, anchor="n")
+            else:
+                self.frame.configure(height=230)
+                self.background.configure(height=228)
+                self.run_button.place(relx=0.5, y=188, anchor="n")
 
         self._on_detection_model_changed()
         self.app.update_panels()
+
+    def _on_vignette_substrate_changed(self, event=None):
+        setter = getattr(self.app, "set_vignette_substrate", None)
+        if setter is not None:
+            setter(self.vignette_substrate_var.get())
+        if event is not None:
+            self.app.update_panels()
 
     def _on_detection_model_changed(self, event=None):
         region_selected = self.detection_model_var.get() == "Region Detection"
@@ -325,6 +392,11 @@ class ScanSetupPanel:
         options = {"scan_type": scan_type}
 
         if scan_type in self.DETECTION_SCAN_TYPES:
+            vignette_substrate = self.substrate_var.get()
+            options["vignette_substrate"] = vignette_substrate
+            setter = getattr(self.app, "set_vignette_substrate", None)
+            if setter is not None:
+                setter(vignette_substrate)
             if (
                 scan_type in self.FULL_SCAN_TYPES
                 and
@@ -335,7 +407,7 @@ class ScanSetupPanel:
                     "Confirm Scan",
                     "The scan parameters are still set to their defaults.\n\n"
                     f"Material: {self.material_var.get()}\n"
-                    f"Substrate thickness: {self.substrate_var.get()}\n\n"
+                    f"Substrate mode: {self.substrate_var.get()}\n\n"
                     "Are these parameters correct?",
                     parent=self.root,
                 )
@@ -374,6 +446,12 @@ class ScanSetupPanel:
                     parent=self.root,
                 )
                 return
+            if scan_type == "Vignette Filter":
+                vignette_substrate = self.vignette_substrate_var.get()
+                options["vignette_substrate"] = vignette_substrate
+                setter = getattr(self.app, "set_vignette_substrate", None)
+                if setter is not None:
+                    setter(vignette_substrate)
 
         self.app.close_all_panels()
         self.app.open_panel("Scan Info Panel")

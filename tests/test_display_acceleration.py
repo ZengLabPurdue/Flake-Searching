@@ -187,6 +187,89 @@ class DisplayAccelerationTests(unittest.TestCase):
 
             self.assertEqual(panel._raw_result_path(result_path), raw_path)
 
+    def test_scan_discovery_exposes_individual_10x_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            raw_path = (
+                scan_path
+                / "All Images"
+                / "10x"
+                / "wafer 1"
+                / "Raw"
+                / "img_10x_0.png"
+            )
+            processed_path = (
+                scan_path
+                / "All Images"
+                / "10x"
+                / "wafer 1"
+                / "Processed"
+                / raw_path.name
+            )
+            raw_path.parent.mkdir(parents=True)
+            processed_path.parent.mkdir(parents=True)
+            raw_path.touch()
+            processed_path.touch()
+
+            panel = ViewScansPanel.__new__(ViewScansPanel)
+            panel.view_scan_path = scan_path
+
+            roots, available = panel._discover_result_layers()
+
+            self.assertEqual(roots["10x"], scan_path / "All Images" / "10x")
+            self.assertIn("10x Images", available)
+
+    def test_individual_capture_images_pair_raw_and_processed_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chip_folder = Path(directory) / "wafer 1"
+            raw_folder = chip_folder / "Raw"
+            processed_folder = chip_folder / "Processed"
+            raw_folder.mkdir(parents=True)
+            processed_folder.mkdir(parents=True)
+            raw_zero = raw_folder / "img_10x_0.png"
+            raw_one = raw_folder / "img_10x_1.png"
+            processed_zero = processed_folder / raw_zero.name
+            processed_two = processed_folder / "img_10x_2.png"
+            for path in (
+                raw_zero,
+                raw_one,
+                processed_zero,
+                processed_two,
+            ):
+                path.touch()
+
+            panel = ViewScansPanel.__new__(ViewScansPanel)
+            panel.capture_chip_folder = chip_folder
+
+            image_files = panel._capture_image_files(chip_folder)
+
+            self.assertEqual(
+                [path.name for path in image_files],
+                ["img_10x_0.png", "img_10x_1.png", "img_10x_2.png"],
+            )
+            self.assertEqual(image_files[0], processed_zero)
+            self.assertEqual(
+                panel._capture_result_path(image_files[0], "Raw"),
+                raw_zero,
+            )
+            self.assertEqual(
+                panel._capture_result_path(image_files[0], "Processed"),
+                processed_zero,
+            )
+
+    def test_raw_toggle_refreshes_individual_capture_image(self):
+        panel = ViewScansPanel.__new__(ViewScansPanel)
+        panel.selected_view = "10x Images"
+        panel.capture_images_mode = True
+        panel.raw_result_var = _FakeVariable(True)
+        refreshed = []
+        panel.display_current_image = lambda: refreshed.append(True)
+
+        panel._toggle_raw_result()
+
+        self.assertEqual(refreshed, [True])
+        self.assertTrue(panel.raw_result_var.get())
+
     def test_map_opencl_failure_falls_back_to_cpu(self):
         viewer = self._viewer_without_tk()
         viewer.render_backend = OPENCL_BACKEND

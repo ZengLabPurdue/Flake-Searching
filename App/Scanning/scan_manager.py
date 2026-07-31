@@ -11,7 +11,11 @@ import numpy as np
 
 from config import HOME_DIR, PIXEL_SIZE, RESOLUTION_DIM, CROP_RATIO, RELATIVE_XY, MAP_SIZE
 from Imaging import image_metadata
-from Imaging.flatfield_storage import save_vignette_filter
+from Imaging.flatfield_storage import (
+    DEFAULT_VIGNETTE_SUBSTRATE,
+    normalize_vignette_substrate,
+    save_vignette_filter,
+)
 
 from . import chip_detection
 from . import flake_detection
@@ -26,20 +30,6 @@ class ScanCancelled(RuntimeError):
 
 class ScanManager:
     HUNDRED_X_GROUP_FIELD_RATIO = 0.75
-    SCAN_AUTOFOCUS_PROFILES = {
-        "10X": {
-            "focus_range": 200,
-            "z_velo": 50,
-            "z_accel": 10000,
-            "peak_found_threshold": 20,
-        },
-        "20X": {
-            "focus_range": 100,
-            "z_velo": 25,
-            "z_accel": 10000,
-            "peak_found_threshold": 20,
-        },
-    }
     DEFAULT_WINDOWS = {
         "2x Scan": (5, 5),
         "10x Scan": (10, 10),
@@ -177,9 +167,14 @@ class ScanManager:
         detection_model="Region Detection",
         scan_profile=None,
         display_class_legend=True,
+        vignette_substrate=None,
     ):
         if self.scan_running:
             raise RuntimeError("A scan is already running.")
+        if scan_type == "Vignette Filter" or vignette_substrate is not None:
+            vignette_substrate = normalize_vignette_substrate(
+                vignette_substrate or DEFAULT_VIGNETTE_SUBSTRATE
+            )
 
         with self._scan_thread_lock:
             managed_worker = self._scan_thread is threading.current_thread()
@@ -210,6 +205,7 @@ class ScanManager:
             "scan_profile_name": getattr(scan_profile, "name", None),
             "scan_profile_path": str(profile_path) if profile_path else None,
             "display_class_legend": bool(display_class_legend),
+            "vignette_substrate": vignette_substrate,
         }
         self.update_scan_status(processing_state="Waiting")
 
@@ -217,6 +213,14 @@ class ScanManager:
         restored_to_start = False
         try:
             self._wait_for_existing_focus()
+            if vignette_substrate is not None:
+                set_vignette_substrate = getattr(
+                    self.app,
+                    "set_vignette_substrate",
+                    None,
+                )
+                if set_vignette_substrate is not None:
+                    set_vignette_substrate(vignette_substrate)
             if scan_type in self.RETURN_TO_START_SCAN_TYPES:
                 starting_xy = self.stage.get_xy_position(strict=True)
             if scan_type in self.COMPLETE_SCAN_WINDOWS:
@@ -278,7 +282,8 @@ class ScanManager:
                 self.create_vignette_filter(
                     window=self._validate_window(
                         window or self.DEFAULT_WINDOWS[scan_type]
-                    )
+                    ),
+                    substrate=vignette_substrate,
                 )
             else:
                 raise ValueError(f"Unknown scan type: {scan_type}")
@@ -447,7 +452,9 @@ class ScanManager:
                 f"{magnification} scanning requires an autofocus controller."
             )
 
-        profile = self.SCAN_AUTOFOCUS_PROFILES[magnification]
+        # Keep every autofocus entry point on the controller's single
+        # magnification profile table.
+        profile = focus_controller.autofocus_defaults(magnification)
         corner_offsets = self._focus_corner_offsets(scan_offsets)
         stop_event = getattr(focus_controller, "stop_focus_event", None)
         if stop_event is not None:
@@ -518,12 +525,13 @@ class ScanManager:
         self.frame_processor.arm_capture_after_motion(expected_xy)
         return expected_xy
 
-    def _change_objective(self, position):
+    def _change_objective(self, position, autofocus=True):
         self._check_cancelled()
         self._wait_for_stage()
         self.turret_controller.change_objective(
             position,
             cancel_check=self._check_cancelled,
+            autofocus=autofocus,
         )
         self._wait_for_stage()
 
@@ -887,7 +895,7 @@ class ScanManager:
         start_time = time.time()
 
         self.app.set_view("Map")
-        self._change_objective(2)
+        self._change_objective(2, autofocus=False)
 
         if scan_path is None:
             path = HOME_DIR / "Scans" / datetime.now().strftime("10x (%Y-%m-%d) (%H-%M-%S)")
@@ -1067,8 +1075,8 @@ class ScanManager:
         start_time = time.time()
 
         self.app.set_view("Map")
-        self._change_objective(2)
-        self._change_objective(3)
+        self._change_objective(2, autofocus=False)
+        self._change_objective(3, autofocus=False)
 
         if scan_path is None:
             path = HOME_DIR / "Scans" / datetime.now().strftime("20x (%Y-%m-%d) (%H-%M-%S)")
@@ -1454,7 +1462,7 @@ class ScanManager:
 
         if capture_groups:
             self.update_scan_status(stage="Capturing regions at 100x", progress="0%")
-            self._change_objective(3)
+            self._change_objective(3, autofocus=False)
             navigation_offset_x = RELATIVE_XY["20X"]["X"] - RELATIVE_XY["10X"]["X"]
             navigation_offset_y = RELATIVE_XY["20X"]["Y"] - RELATIVE_XY["10X"]["Y"]
 
@@ -1488,7 +1496,7 @@ class ScanManager:
                     )
                 finally:
                     if not self._stop_event.is_set():
-                        self._change_objective(3)
+                        self._change_objective(3, autofocus=False)
 
                 relative_image_path = Path(saved_path).relative_to(scan_path).as_posix()
                 capture_position = {
@@ -1559,11 +1567,18 @@ class ScanManager:
         )
         print(f"100x scan saved to: {scan_path}")
 
-    def create_vignette_filter(self, window=(10, 10), sigma=40, output=False):
+    def create_vignette_filter(
+        self,
+        window=(10, 10),
+        sigma=40,
+        output=False,
+        substrate=DEFAULT_VIGNETTE_SUBSTRATE,
+    ):
         self._check_cancelled()
         magnification = self.app.get_magnification()
+        substrate = normalize_vignette_substrate(substrate)
         self.app.open_panel("Scan Info Panel")
-        print("Creating vignette filter...")
+        print(f"Creating {substrate} vignette filter...")
         start_time = time.time()
         folder_path = HOME_DIR / "Saved Images" / "Vignette Filter"
         img_paths = []
@@ -1673,6 +1688,7 @@ class ScanManager:
             vignette_filter,
             magnification,
             self.app.get_resolution(),
+            substrate=substrate,
         )
         self.frame_processor.clear_vignette_filter_cache()
 
