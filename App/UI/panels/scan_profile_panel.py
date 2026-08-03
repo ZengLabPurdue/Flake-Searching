@@ -432,7 +432,7 @@ class ScanProfilePanel:
         self.filter_bound_entries = []
         self._build_filter_bounds_row(
             self.size_filter_options,
-            "Size (µm)",
+            "Size (µm²)",
             "minimum_um",
             "maximum_um",
         )
@@ -618,6 +618,14 @@ class ScanProfilePanel:
             command=self.run_profile_preview,
         )
         self.run_preview_button.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        self.save_preview_button = ttk.Button(
+            background,
+            text="Save preview image",
+            style="Normal.TButton",
+            command=self.open_preview_save_dialog,
+        )
+        self.save_preview_button.pack(fill="x", pady=(4, 0))
+        self.save_preview_button.state(["disabled"])
         self.preview_toggle = ttk.Checkbutton(
             background,
             text="Show profile result",
@@ -1172,6 +1180,7 @@ class ScanProfilePanel:
         self.preview_time_var.set(f"Preview time: {elapsed_seconds:.3f}s")
         self.preview_enabled_var.set(True)
         self.preview_toggle.state(["!disabled"])
+        self.save_preview_button.state(["!disabled"])
         self._update_preview_region_controls()
         self.toggle_profile_preview()
         matched = len(self.preview_regions)
@@ -1189,25 +1198,168 @@ class ScanProfilePanel:
             and self.preview_result_rgb is not None
         )
         if showing_result:
-            image_rgb = self.preview_result_rgb.copy()
-            selected_region = self._selected_preview_region()
-            show_everything = self.preview_show_all_var.get()
-            if not show_everything and selected_region is not None:
-                image_rgb = self._isolate_preview_region(
-                    image_rgb,
-                    selected_region,
-                    self.preview_details,
-                )
-            if self.preview_legend_var.get():
-                legend_regions = (
-                    self.preview_regions
-                    if show_everything
-                    else ([selected_region] if selected_region is not None else [])
-                )
-                image_rgb = self._draw_preview_legend(image_rgb, legend_regions)
+            image_rgb = self._render_preview_image(
+                show_all=self.preview_show_all_var.get(),
+                show_legend=self.preview_legend_var.get(),
+            )
         else:
             image_rgb = cv2.cvtColor(self.preview_image_bgr, cv2.COLOR_BGR2RGB)
         self.app.display_image(image_rgb, color_order="RGB")
+
+    def _render_preview_image(
+        self,
+        *,
+        show_all,
+        show_legend,
+        show_area=False,
+        show_perimeter_area_ratio=False,
+    ):
+        if self.preview_result_rgb is None:
+            return None
+        image_rgb = self.preview_result_rgb.copy()
+        selected_region = self._selected_preview_region()
+        regions = (
+            self.preview_regions
+            if show_all
+            else ([selected_region] if selected_region is not None else [])
+        )
+        if not show_all and selected_region is not None:
+            image_rgb = self._isolate_preview_region(
+                image_rgb,
+                selected_region,
+                self.preview_details,
+            )
+        if show_area or show_perimeter_area_ratio:
+            image_rgb = region_classifier.draw_region_measurement_labels(
+                image_rgb,
+                regions,
+                show_area=show_area,
+                show_perimeter_area_ratio=show_perimeter_area_ratio,
+            )
+        if show_legend:
+            image_rgb = self._draw_preview_legend(image_rgb, regions)
+        return image_rgb
+
+    def open_preview_save_dialog(self):
+        if self.class_edit_active:
+            self._show_confirm_current_message()
+            return
+        if self.preview_result_rgb is None:
+            messagebox.showinfo(
+                "Profile Preview",
+                "Run the profile preview before saving an image.",
+                parent=self.root,
+            )
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Save Profile Preview")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        content = ttk.Frame(dialog, padding=12)
+        content.pack(fill="both", expand=True)
+        show_all_var = tk.BooleanVar(value=self.preview_show_all_var.get())
+        show_area_var = tk.BooleanVar(value=False)
+        show_ratio_var = tk.BooleanVar(value=False)
+        show_legend_var = tk.BooleanVar(value=self.preview_legend_var.get())
+        options = (
+            ("Display all accepted regions", show_all_var),
+            ("Display area on image", show_area_var),
+            ("Display perimeter / area on image", show_ratio_var),
+            ("Show class legend", show_legend_var),
+        )
+        for label, variable in options:
+            ttk.Checkbutton(
+                content,
+                text=label,
+                variable=variable,
+            ).pack(anchor="w", pady=2)
+
+        buttons = ttk.Frame(content)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(
+            buttons,
+            text="Cancel",
+            command=dialog.destroy,
+        ).pack(side="right")
+        ttk.Button(
+            buttons,
+            text="Save...",
+            command=lambda: self._save_preview_image(
+                dialog,
+                show_all=show_all_var.get(),
+                show_area=show_area_var.get(),
+                show_perimeter_area_ratio=show_ratio_var.get(),
+                show_legend=show_legend_var.get(),
+            ),
+        ).pack(side="right", padx=(0, 6))
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.grab_set()
+        dialog.focus_set()
+
+    def _save_preview_image(
+        self,
+        dialog,
+        *,
+        show_all,
+        show_area,
+        show_perimeter_area_ratio,
+        show_legend,
+    ):
+        image_rgb = self._render_preview_image(
+            show_all=show_all,
+            show_legend=show_legend,
+            show_area=show_area,
+            show_perimeter_area_ratio=show_perimeter_area_ratio,
+        )
+        if image_rgb is None:
+            return
+        initial_name = (
+            f"{self.preview_source_path.stem}_profile_preview.png"
+            if self.preview_source_path is not None
+            else "profile_preview.png"
+        )
+        selected = filedialog.asksaveasfilename(
+            title="Save Profile Preview",
+            parent=dialog,
+            initialfile=initial_name,
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png")],
+        )
+        if not selected:
+            return
+        save_path = Path(selected)
+        if save_path.suffix.lower() != ".png":
+            save_path = save_path.with_suffix(".png")
+        try:
+            image_metadata.save_png(
+                save_path,
+                cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR),
+                metadata={
+                    "source": "profile_preview",
+                    "profile_name": (
+                        self.profile_name_var.get().strip()
+                        or self.scan_profile.name
+                    ),
+                    "display_all_regions": bool(show_all),
+                    "display_area": bool(show_area),
+                    "display_perimeter_area_ratio": bool(
+                        show_perimeter_area_ratio
+                    ),
+                    "display_legend": bool(show_legend),
+                },
+            )
+        except (OSError, ValueError, cv2.error) as exc:
+            messagebox.showerror(
+                "Save Profile Preview Error",
+                str(exc),
+                parent=dialog,
+            )
+            return
+        dialog.destroy()
+        self.status_var.set(f"Saved profile preview to {save_path}.")
 
     def preview_calibration_changed(self):
         if self.preview_image_bgr is None:
@@ -1344,8 +1496,9 @@ class ScanProfilePanel:
             heading += f"  |  Group: {group}"
         return "\n".join((
             heading,
-            f"Area: {cls._format_measurement(region.get('area_um2'), 'µm²')}"
-            f"  |  Size: {cls._format_measurement(region.get('size_um'), 'µm')}",
+            f"Size: {cls._format_measurement(region.get('area_um2'), 'µm²')}"
+            f"  |  Longest side: "
+            f"{cls._format_measurement(region.get('size_um'), 'µm')}",
             f"Width: {cls._format_measurement(region.get('width_um'), 'µm')}"
             f"  |  Height: {cls._format_measurement(region.get('height_um'), 'µm')}",
             f"Perimeter: {cls._format_measurement(region.get('perimeter_um'), 'µm')}"
@@ -2031,6 +2184,8 @@ class ScanProfilePanel:
         )
         if hasattr(self, "preview_toggle"):
             self.preview_toggle.state(["disabled"])
+        if hasattr(self, "save_preview_button"):
+            self.save_preview_button.state(["disabled"])
         if hasattr(self, "previous_region_button"):
             self.previous_region_button.state(["disabled"])
             self.next_region_button.state(["disabled"])

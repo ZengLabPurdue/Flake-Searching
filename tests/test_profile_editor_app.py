@@ -1,7 +1,9 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+import tempfile
 import tkinter as tk
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -109,8 +111,65 @@ class ProfileEditorAppTests(unittest.TestCase):
         self.assertTrue(np.all(selected[instance_mask == 0] == 255))
         self.assertFalse(np.any(np.all(highlighted == (255, 0, 255), axis=2)))
         self.assertIn("Class: Graphene", statistics)
-        self.assertIn("Area: 12.500 µm²", statistics)
+        self.assertIn("Size: 12.500 µm²", statistics)
+        self.assertIn("Longest side: 5.250 µm", statistics)
         self.assertIn("P:A: 1.120 1/µm", statistics)
+
+    def test_preview_export_saves_the_rendered_png_with_selected_options(self):
+        panel_type = profile_editor_app.ScanProfilePanel
+        panel = object.__new__(panel_type)
+        panel.preview_result_rgb = np.full(
+            (8, 10, 3),
+            (12, 34, 56),
+            dtype=np.uint8,
+        )
+        panel.preview_regions = []
+        panel.preview_region_index = None
+        panel.preview_details = {}
+        panel.preview_source_path = Path("source.png")
+        panel.scan_profile = type("_Profile", (), {"name": "Test Profile"})()
+        panel.profile_name_var = type(
+            "_Name",
+            (),
+            {"get": lambda _self: "Test Profile"},
+        )()
+        statuses = []
+        panel.status_var = type(
+            "_Status",
+            (),
+            {"set": lambda _self, value: statuses.append(value)},
+        )()
+        dialog = type(
+            "_Dialog",
+            (),
+            {"destroy": lambda self: setattr(self, "destroyed", True)},
+        )()
+        panel_globals = panel_type._save_preview_image.__globals__
+
+        with tempfile.TemporaryDirectory() as directory:
+            save_path = Path(directory) / "preview.png"
+            with patch.object(
+                panel_globals["filedialog"],
+                "asksaveasfilename",
+                return_value=str(save_path),
+            ):
+                panel._save_preview_image(
+                    dialog,
+                    show_all=True,
+                    show_area=False,
+                    show_perimeter_area_ratio=False,
+                    show_legend=False,
+                )
+
+            self.assertTrue(save_path.is_file())
+            metadata = panel_globals["image_metadata"].read_png_metadata(save_path)
+            self.assertEqual(metadata["profile_name"], "Test Profile")
+            self.assertEqual(metadata["display_all_regions"], "true")
+            self.assertEqual(metadata["display_area"], "false")
+            self.assertEqual(metadata["display_perimeter_area_ratio"], "false")
+            self.assertEqual(metadata["display_legend"], "false")
+        self.assertTrue(dialog.destroyed)
+        self.assertIn("Saved profile preview", statuses[-1])
 
     def test_filter_bound_parser_accepts_open_inclusive_ranges(self):
         class StubVariable:
@@ -155,6 +214,8 @@ class ProfileEditorAppTests(unittest.TestCase):
             root.update_idletasks()
             panel = app.scan_profile_panel
             self.assertTrue(hasattr(panel, "preview_legend_check"))
+            self.assertTrue(hasattr(panel, "save_preview_button"))
+            self.assertTrue(panel.save_preview_button.instate(["disabled"]))
             self.assertTrue(panel.preview_legend_var.get())
             panel.new_class()
             panel.classification_type_var.set("Contrast range")

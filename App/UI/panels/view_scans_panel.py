@@ -185,8 +185,8 @@ def format_region_statistics(record):
     return "\n".join((
         f"Class: {classification or '—'}",
         f"Group: {group or '—'}",
-        f"Area: {area_text}",
-        f"Size: {size_text}",
+        f"Size: {area_text}",
+        f"Longest side: {size_text}",
         f"Width: {width_text}",
         f"Height: {height_text}",
         f"Perimeter: {perimeter_text}",

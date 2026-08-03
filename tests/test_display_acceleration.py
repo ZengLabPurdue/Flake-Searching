@@ -500,8 +500,8 @@ class DisplayAccelerationTests(unittest.TestCase):
 
         self.assertIn("Class: Thin flake", text)
         self.assertIn("Group: Graphene", text)
-        self.assertIn("Area: 32.12 µm²", text)
-        self.assertIn("Size: 10 µm", text)
+        self.assertIn("Size: 32.12 µm²", text)
+        self.assertIn("Longest side: 10 µm", text)
         self.assertIn("Width: 10 µm", text)
         self.assertIn("Height: 5 µm", text)
         self.assertIn("Perimeter: 30.12 µm", text)
@@ -515,8 +515,8 @@ class DisplayAccelerationTests(unittest.TestCase):
             "bounding_box_px": {"width": 31, "height": 17},
         })
 
-        self.assertIn("Area: —", text)
-        self.assertIn("Size: 31 px", text)
+        self.assertIn("Size: —", text)
+        self.assertIn("Longest side: 31 px", text)
         self.assertIn("Width: 31 px", text)
         self.assertIn("Height: 17 px", text)
         self.assertIn("Box (px): x —, y —, 31 × 17", text)
@@ -535,8 +535,8 @@ class DisplayAccelerationTests(unittest.TestCase):
             },
         })
 
-        self.assertIn("Area: 80 px²", text)
-        self.assertIn("Size: 10 px", text)
+        self.assertIn("Size: 80 px²", text)
+        self.assertIn("Longest side: 10 px", text)
         self.assertIn("Perimeter: 40 px", text)
         self.assertIn("Perimeter / area: 0.5 px⁻¹", text)
 

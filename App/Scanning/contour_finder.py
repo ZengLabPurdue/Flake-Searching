@@ -548,7 +548,8 @@ def find_flakes(
         "create_classified_image",
         region_classifier.create_classified_image,
         image_rgb.shape,
-        filtered_external_mask,
+        # Region filters control the colored overlay, not the white preview base.
+        classification["external_mask"],
         filtered_class_index_map,
         profile_classes,
     )

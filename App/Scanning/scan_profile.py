@@ -54,15 +54,35 @@ FILTER_BOUND_KEYS = {
 }
 ScanProfileError = ValueError
 
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _profile_folder_name(name):
+    """Return a path-safe profile folder name without changing its display."""
+    name = str(name).strip()
+    if not name:
+        raise ScanProfileError("Enter a profile name before saving.")
+    if name in {".", ".."} or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+        raise ScanProfileError(
+            "Profile names cannot contain path separators or "
+            'the characters < > : " | ? *.'
+        )
+    if name.endswith((".", " ")):
+        raise ScanProfileError("Profile names cannot end with a dot or space.")
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        raise ScanProfileError(f"'{name}' is a reserved Windows folder name.")
+    return name
+
+
 def _profile_slug(name):
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-") or "profile"
-    reserved = {
-        "CON", "PRN", "AUX", "NUL",
-        *(f"COM{i}" for i in range(1, 10)),
-        *(f"LPT{i}" for i in range(1, 10)),
-    }
-    return f"profile_{slug}" if slug.upper() in reserved else slug
+    return f"profile_{slug}" if slug.upper() in _WINDOWS_RESERVED_NAMES else slug
 
 
 def _read_image(path):
@@ -122,7 +142,7 @@ class ScanProfile:
         self.filters = []
 
     def profile_directory(self, name):
-        return self.profiles_dir / _profile_slug(name)
+        return self.profiles_dir / _profile_folder_name(name)
 
     def find_class(self, name):
         name = name.strip().casefold()

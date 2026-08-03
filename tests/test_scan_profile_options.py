@@ -24,6 +24,7 @@ from Scanning.region_classifier import (  # noqa: E402
     create_classified_image,
     draw_class_legend,
     draw_region_area_labels,
+    draw_region_measurement_labels,
     filter_combined_class_regions,
     load_profile_configuration,
     match_profile_class,
@@ -115,6 +116,29 @@ class ScanProfileOptionsTests(unittest.TestCase):
             self.assertEqual(loaded.groups, ["hBN"])
             self.assertFalse(loaded.classes[0]["identify"])
             self.assertEqual(len(loaded.filters), 2)
+
+    def test_profile_folder_preserves_the_exact_valid_profile_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = ScanProfile(directory)
+            self._add_class(profile, "Thin", (1, 2, 3))
+            profile_name = "Gr_base (285nm - 4in)"
+
+            loaded = profile.save_profile(profile_name)
+            payload = json.loads(
+                (loaded.path / "profile.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(loaded.path.name, profile_name)
+            self.assertEqual(loaded.name, profile_name)
+            self.assertEqual(payload["name"], profile_name)
+
+    def test_profile_folder_rejects_unsafe_or_reserved_names(self):
+        profile = ScanProfile()
+
+        for invalid_name in ("../escape", "bad/name", "bad:name", "CON"):
+            with self.subTest(name=invalid_name):
+                with self.assertRaises(ValueError):
+                    profile.profile_directory(invalid_name)
 
     def test_range_class_round_trip_needs_no_reference_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -351,7 +375,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
             self.assertEqual(configuration["filters"][0]["maximum_um"], 30.0)
             self.assertEqual(configuration["classes"][0]["group"], "Artifacts")
 
-    def test_size_filter_applies_to_final_connected_region(self):
+    def test_size_filter_uses_final_connected_filled_area(self):
         class_index_map = np.zeros((12, 12), dtype=np.int32)
         class_index_map[2:8, 3:7] = 1
         profile_class = {
@@ -377,10 +401,20 @@ class ScanProfileOptionsTests(unittest.TestCase):
             profile_filters=[profile_filter],
         )
 
-        self.assertEqual(filtered["accepted_regions"], [])
-        self.assertEqual(len(filtered["rejected_regions"]), 1)
-        self.assertEqual(filtered["rejected_regions"][0]["size_um"], 6)
-        self.assertFalse(np.any(filtered["class_index_map"]))
+        self.assertEqual(len(filtered["accepted_regions"]), 1)
+        self.assertEqual(filtered["accepted_regions"][0]["area_um2"], 24)
+        self.assertEqual(filtered["accepted_regions"][0]["size_um"], 6)
+
+        profile_filter["minimum_um"] = 25
+        rejected = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=1,
+            profile_filters=[profile_filter],
+        )
+        self.assertEqual(rejected["accepted_regions"], [])
+        self.assertEqual(len(rejected["rejected_regions"]), 1)
+        self.assertFalse(np.any(rejected["class_index_map"]))
 
     def test_filter_crud_copy_and_extend_keep_independent_ids(self):
         source = ScanProfile()
@@ -499,8 +533,8 @@ class ScanProfileOptionsTests(unittest.TestCase):
                 "name": "Exact size",
                 "type": FILTER_TYPE_SIZE,
                 "enabled": True,
-                "minimum_um": 5,
-                "maximum_um": 5,
+                "minimum_um": 20,
+                "maximum_um": 20,
             },
             {
                 "id": "box",
@@ -1122,7 +1156,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
             0,
         )
 
-    def test_find_flakes_rebuilds_render_map_from_accepted_components_only(self):
+    def test_find_flakes_keeps_white_base_while_rejecting_components(self):
         image = np.full((100, 100, 3), 180, dtype=np.uint8)
         cv2.rectangle(image, (20, 20), (79, 79), (70, 70, 70), -1)
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
@@ -1164,7 +1198,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
         self.assertFalse(np.any(details["matched_region_mask"]))
         self.assertEqual(details["unfiltered_external_mask"][50, 50], 255)
         self.assertEqual(details["external_mask"][50, 50], 0)
-        self.assertTrue(np.array_equal(classified[50, 50], (0, 0, 0)))
+        self.assertTrue(np.array_equal(classified[50, 50], (255, 255, 255)))
         self.assertTrue(np.array_equal(
             classified,
             details["classified_image_without_legend"],
@@ -1276,11 +1310,66 @@ class ScanProfileOptionsTests(unittest.TestCase):
             "matched_color_rgb": (40, 220, 80),
             "bounding_box": {"x": 40, "y": 50, "width": 20, "height": 15},
             "area_um2": 123.4,
+            "perimeter_area_ratio_per_um": 0.625,
         }
         one_label = draw_region_area_labels(image, [first])
         two_labels = draw_region_area_labels(image, [first, dict(first)])
+        ratio_label = draw_region_measurement_labels(
+            image,
+            [first],
+            show_area=False,
+            show_perimeter_area_ratio=True,
+        )
 
         self.assertFalse(np.array_equal(one_label, two_labels))
+        self.assertFalse(np.array_equal(image, ratio_label))
+        self.assertFalse(np.array_equal(one_label, ratio_label))
+
+    def test_region_measurement_labels_are_small_stacked_and_unitless(self):
+        class RecordingDraw:
+            def __init__(self):
+                self.labels = []
+
+            @staticmethod
+            def multiline_textbbox(_position, text, **_kwargs):
+                lines = text.splitlines()
+                return (0, 0, max(len(line) for line in lines) * 5, len(lines) * 8)
+
+            def multiline_text(self, _position, text, **_kwargs):
+                self.labels.append(text)
+
+        image = np.zeros((100, 160, 3), dtype=np.uint8)
+        region = {
+            "matched_class": "Thin",
+            "matched_color_rgb": (40, 220, 80),
+            "bounding_box": {"x": 40, "y": 50, "width": 20, "height": 15},
+            "area_um2": 12.5,
+            "perimeter_area_ratio_per_um": 0.625,
+        }
+        recording_draw = RecordingDraw()
+
+        with (
+            patch(
+                "Scanning.region_classifier.ImageDraw.Draw",
+                return_value=recording_draw,
+            ),
+            patch(
+                "Scanning.region_classifier._load_class_legend_font",
+                return_value=object(),
+            ) as load_font,
+        ):
+            draw_region_measurement_labels(
+                image,
+                [region],
+                show_area=True,
+                show_perimeter_area_ratio=True,
+            )
+
+        load_font.assert_called_once_with(8)
+        self.assertEqual(
+            recording_draw.labels,
+            ["Size 12.5\nP:A 0.6250"],
+        )
 
     def test_region_area_uses_segmented_pixel_count_and_pixel_scale(self):
         image = np.full((12, 12, 3), 100, dtype=np.uint8)

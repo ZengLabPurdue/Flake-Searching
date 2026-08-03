@@ -1185,7 +1185,7 @@ def _region_passes_filters(region, profile_filters):
                 )
             if filter_type == FILTER_TYPE_SIZE:
                 passed = _inside_inclusive_range(
-                    region["size_um"],
+                    region["area_um2"],
                     profile_filter["minimum_um"],
                     profile_filter["maximum_um"],
                 )
@@ -1460,13 +1460,22 @@ def draw_class_legend(
     return np.asarray(result).copy()
 
 
-def draw_region_area_labels(image_rgb, region_results):
-    """Draw each matched region's physical area beside its bounding box."""
+def draw_region_measurement_labels(
+    image_rgb,
+    region_results,
+    *,
+    show_area=True,
+    show_perimeter_area_ratio=False,
+):
+    """Draw selected physical measurements beside each matched region."""
+    if not show_area and not show_perimeter_area_ratio:
+        return image_rgb.copy()
     result = Image.fromarray(image_rgb.copy())
     draw = ImageDraw.Draw(result)
     scale = max(1.0, min(image_rgb.shape[:2]) / 700.0)
-    font_size = max(13, int(round(16 * scale)))
+    font_size = max(7, int(round(8 * scale)))
     font = _load_class_legend_font(font_size)
+    line_spacing = max(1, int(round(scale)))
     margin = max(3, int(round(4 * scale)))
     image_height, image_width = image_rgb.shape[:2]
     occupied = []
@@ -1492,19 +1501,30 @@ def draw_region_area_labels(image_rgb, region_results):
 
     for region in region_results or ():
         area_um2 = region.get("area_um2")
+        ratio_per_um = region.get("perimeter_area_ratio_per_um")
         bounding_box = region.get("bounding_box")
         color = region.get("matched_color_rgb")
+        label_parts = []
+        if show_area and area_um2 is not None:
+            label_parts.append(f"Size {area_um2:,.1f}")
+        if show_perimeter_area_ratio and ratio_per_um is not None:
+            label_parts.append(f"P:A {ratio_per_um:,.4f}")
         if (
             region.get("matched_class") is None
-            or area_um2 is None
+            or not label_parts
             or not bounding_box
             or color is None
         ):
             continue
 
-        label = f"{area_um2:,.1f} \N{MICRO SIGN}m\N{SUPERSCRIPT TWO}"
+        label = "\n".join(label_parts)
         color = tuple(int(channel) for channel in color)
-        bounds = draw.textbbox((0, 0), label, font=font)
+        bounds = draw.multiline_textbbox(
+            (0, 0),
+            label,
+            font=font,
+            spacing=line_spacing,
+        )
         text_width = bounds[2] - bounds[0]
         text_height = bounds[3] - bounds[1]
         region_right = int(round(bounding_box["x"] + bounding_box["width"]))
@@ -1579,14 +1599,24 @@ def draw_region_area_labels(image_rgb, region_results):
         )
 
     for label, color, (text_x, text_y), _, _ in placements:
-        draw.text(
+        draw.multiline_text(
             (text_x, text_y),
             label,
             font=font,
             fill=color,
+            spacing=line_spacing,
         )
 
     return np.asarray(result).copy()
+
+
+def draw_region_area_labels(image_rgb, region_results):
+    """Draw each matched region's physical area beside its bounding box."""
+    return draw_region_measurement_labels(
+        image_rgb,
+        region_results,
+        show_area=True,
+    )
 
 
 def _seed_inside_contour(contour, allowed_mask):
