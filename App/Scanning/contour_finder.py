@@ -344,6 +344,31 @@ def _create_contour_edge_map(image_shape, external_contours, internal_contours):
     return edge_map, external_mask, internal_mask
 
 
+def _filter_external_candidates(
+    external_mask,
+    unfiltered_class_index_map,
+    filtered_class_index_map,
+):
+    """Remove white candidate remnants around rejected class components."""
+    filtered_external_mask = external_mask.copy()
+    rejected_class_pixels = (
+        (unfiltered_class_index_map > 0)
+        & (filtered_class_index_map == 0)
+    )
+    if not np.any(rejected_class_pixels):
+        return filtered_external_mask
+
+    component_count, candidate_labels = cv2.connectedComponents(
+        (external_mask > 0).astype(np.uint8),
+        connectivity=8,
+    )
+    remove_labels = np.zeros(component_count, dtype=bool)
+    remove_labels[np.unique(candidate_labels[rejected_class_pixels])] = True
+    remove_labels[0] = False
+    filtered_external_mask[remove_labels[candidate_labels]] = 0
+    return filtered_external_mask
+
+
 def _show_results(image_rgb, contour_edge_map, contour_image, classified_image):
     figure, axes = plt.subplots(2, 2, figsize=(12, 10))
     for axis, image, title in zip(
@@ -464,8 +489,7 @@ def find_flakes(
             if profile_path
             else {
                 "classes": [],
-                "minimum_size_um": None,
-                "maximum_size_um": None,
+                "filters": [],
             }
         )
     if not isinstance(profile_configuration, dict):
@@ -496,25 +520,37 @@ def find_flakes(
         region_flood_fill_threshold,
         stats,
         pixel_size_um,
-        profile_configuration["minimum_size_um"],
-        profile_configuration["maximum_size_um"],
+        profile_configuration.get("filters", []),
+    )
+    combined = _timed_call(
+        stats,
+        "filter_combined_class_regions",
+        region_classifier.filter_combined_class_regions,
+        classification["class_index_map"],
+        profile_classes,
+        pixel_size_um,
+        profile_configuration.get("filters", []),
+    )
+    filtered_class_index_map = combined["class_index_map"]
+    combined_region_results = combined["accepted_regions"]
+    rejected_combined_region_results = combined["rejected_regions"]
+    all_combined_region_results = combined["all_regions"]
+    filtered_external_mask = _timed_call(
+        stats,
+        "filter_external_candidates",
+        _filter_external_candidates,
+        classification["external_mask"],
+        classification["class_index_map"],
+        filtered_class_index_map,
     )
     classified_without_legend = _timed_call(
         stats,
         "create_classified_image",
         region_classifier.create_classified_image,
         image_rgb.shape,
-        classification["external_mask"],
-        classification["class_index_map"],
+        filtered_external_mask,
+        filtered_class_index_map,
         profile_classes,
-    )
-    combined_region_results = _timed_call(
-        stats,
-        "combine_class_regions",
-        region_classifier.combined_class_regions,
-        classification["class_index_map"],
-        profile_classes,
-        pixel_size_um,
     )
     annotated_image = (
         _timed_call(
@@ -566,39 +602,66 @@ def find_flakes(
             "all_external_contours": detection["all_external_contours"],
             "internal_contours": detection["internal_contours"],
             "internal_contours_by_external": detection["contour_groups"],
-            "external_mask": classification["external_mask"],
+            "external_mask": filtered_external_mask,
+            "unfiltered_external_mask": classification["external_mask"],
             "all_external_mask": classification["all_external_mask"],
             "all_region_mask": classification["all_region_mask"],
             "region_overlap_count_map": classification["region_overlap_count_map"],
-            "matched_region_mask": classification["matched_region_mask"],
-            "class_index_map": classification["class_index_map"],
-            "class_masks": classification["class_masks"],
-            "class_overlap_count_map": classification["class_overlap_count_map"],
+            "matched_region_mask": np.where(
+                filtered_class_index_map > 0,
+                255,
+                0,
+            ).astype(np.uint8),
+            "class_index_map": filtered_class_index_map,
+            "unfiltered_class_index_map": classification["class_index_map"],
+            "class_masks": {
+                item["name"]: np.where(
+                    filtered_class_index_map == item["class_index"] + 1,
+                    255,
+                    0,
+                ).astype(np.uint8)
+                for item in profile_classes
+            },
+            "unfiltered_class_masks": classification["class_masks"],
+            "class_overlap_count_map": np.where(
+                filtered_class_index_map > 0,
+                1,
+                0,
+            ).astype(np.uint16),
+            "unfiltered_class_overlap_count_map": classification[
+                "class_overlap_count_map"
+            ],
             "class_stack_order": [item["name"] for item in profile_classes],
             "legend_position": legend_position if draw_legend else None,
             "background_color_rgb": classification["background_color_rgb"],
             "region_flood_fill_threshold": region_flood_fill_threshold,
             "pixel_size_um": pixel_size_um,
-            "profile_minimum_size_um": profile_configuration["minimum_size_um"],
-            "profile_maximum_size_um": profile_configuration["maximum_size_um"],
+            "profile_filters": [
+                dict(item) for item in profile_configuration.get("filters", [])
+            ],
             "region_results": classification["region_results"],
             "combined_region_results": combined_region_results,
+            "rejected_combined_region_results": rejected_combined_region_results,
+            "all_combined_region_results": all_combined_region_results,
             "class_colors_rgb": class_colors,
             "class_pixel_counts": {
                 item["name"]: int(np.count_nonzero(
-                    classification["class_index_map"] == item["class_index"] + 1
+                    filtered_class_index_map == item["class_index"] + 1
                 ))
                 for item in profile_classes
             },
             "class_layer_pixel_counts": {
                 item["name"]: (
-                    int(np.count_nonzero(classification["class_masks"][item["name"]]))
-                    if item["name"] in classification["class_masks"]
-                    else 0
+                    int(np.count_nonzero(
+                        filtered_class_index_map == item["class_index"] + 1
+                    ))
                 )
                 for item in profile_classes
             },
-            "internal_mask": classification["matched_internal_mask"],
+            "internal_mask": cv2.bitwise_and(
+                classification["matched_internal_mask"],
+                np.where(filtered_class_index_map > 0, 255, 0).astype(np.uint8),
+            ),
             "all_internal_mask": classification["all_internal_mask"],
             "internal_region_results": [
                 item

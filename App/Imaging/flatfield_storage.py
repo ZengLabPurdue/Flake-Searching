@@ -13,8 +13,20 @@ from config import HOME_DIR
 
 FLATFIELD_DIR = HOME_DIR / "Flatfields"
 FLATFIELD_BACKUP_DIR = HOME_DIR / "Calibration Backups" / "Flatfields"
-VIGNETTE_SUBSTRATES = ("100nm", "285nm_4in", "285nm_8in")
+VIGNETTE_SUBSTRATE_LABEL_BY_KEY = {
+    "100nm": "100nm",
+    "285nm_4in": "285nm (4in)",
+    "285nm_8in": "285nm (8in)",
+}
+VIGNETTE_SUBSTRATES = tuple(VIGNETTE_SUBSTRATE_LABEL_BY_KEY)
+VIGNETTE_SUBSTRATE_LABELS = tuple(VIGNETTE_SUBSTRATE_LABEL_BY_KEY.values())
 DEFAULT_VIGNETTE_SUBSTRATE = VIGNETTE_SUBSTRATES[0]
+
+_VIGNETTE_SUBSTRATE_KEY_BY_ALIAS = {
+    alias.casefold(): key
+    for key, label in VIGNETTE_SUBSTRATE_LABEL_BY_KEY.items()
+    for alias in (key, label)
+}
 
 
 def _calibration_key(value, label):
@@ -25,14 +37,23 @@ def _calibration_key(value, label):
 
 
 def normalize_vignette_substrate(substrate):
-    substrate = _calibration_key(substrate, "Substrate")
-    if substrate not in VIGNETTE_SUBSTRATES:
-        supported = ", ".join(VIGNETTE_SUBSTRATES)
+    substrate_text = str(substrate).strip()
+    substrate_key = _VIGNETTE_SUBSTRATE_KEY_BY_ALIAS.get(
+        substrate_text.casefold()
+    )
+    if substrate_key is None:
+        supported = ", ".join(VIGNETTE_SUBSTRATE_LABELS)
         raise ValueError(
-            f"Unknown vignette substrate: {substrate}. "
+            f"Unknown vignette substrate: {substrate_text}. "
             f"Choose one of: {supported}."
         )
-    return substrate
+    return substrate_key
+
+
+def vignette_substrate_label(substrate):
+    return VIGNETTE_SUBSTRATE_LABEL_BY_KEY[
+        normalize_vignette_substrate(substrate)
+    ]
 
 
 def vignette_filter_path(

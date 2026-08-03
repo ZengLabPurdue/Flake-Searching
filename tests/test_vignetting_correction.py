@@ -13,8 +13,11 @@ sys.path.insert(0, str(APP_DIR))
 
 from Imaging import image_metadata, vignetting_corrector  # noqa: E402
 from Imaging.flatfield_storage import (  # noqa: E402
+    VIGNETTE_SUBSTRATE_LABELS,
     VIGNETTE_SUBSTRATES,
+    normalize_vignette_substrate,
     save_vignette_filter,
+    vignette_substrate_label,
     vignette_filter_path,
 )
 from Imaging.frame_processing import FrameProcessor  # noqa: E402
@@ -101,10 +104,22 @@ class VignettingCorrectionTests(unittest.TestCase):
             VIGNETTE_SUBSTRATES,
             ("100nm", "285nm_4in", "285nm_8in"),
         )
+        self.assertEqual(
+            VIGNETTE_SUBSTRATE_LABELS,
+            ("100nm", "285nm (4in)", "285nm (8in)"),
+        )
+        self.assertEqual(
+            normalize_vignette_substrate("285nm (4in)"),
+            "285nm_4in",
+        )
+        self.assertEqual(
+            vignette_substrate_label("285nm_8in"),
+            "285nm (8in)",
+        )
         path = vignette_filter_path(
             "10X",
             "HIGH",
-            substrate="285nm_4in",
+            substrate="285nm (4in)",
         )
         self.assertEqual(
             path.name,

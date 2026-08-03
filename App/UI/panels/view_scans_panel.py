@@ -1,3 +1,5 @@
+import json
+import math
 import re
 from pathlib import Path
 
@@ -5,6 +7,10 @@ import tkinter as tk
 from tkinter import Frame, Label, filedialog, messagebox
 from tkinter import ttk
 
+import cv2
+import numpy as np
+
+from Scanning import flake_detection
 from UI.sparse_tile_viewer import SparseTileViewer
 
 
@@ -18,6 +24,180 @@ CAPTURE_IMAGE_VIEWS = {
     "20x Images": "20x",
 }
 INDIVIDUAL_IMAGE_VIEWS = {"Flakes Found", *CAPTURE_IMAGE_VIEWS}
+SCAN_FOLDER_NAME_PATTERN = re.compile(
+    r"^(?:Full|100x) Scan \(\d{4}-\d{2}-\d{2}\) \(\d{2}-\d{2}-\d{2}\)$"
+)
+
+
+def is_scan_folder_name(value):
+    return bool(SCAN_FOLDER_NAME_PATTERN.fullmatch(str(value)))
+
+
+def _path_parts(value):
+    """Return platform-independent path components from a manifest value."""
+    if not isinstance(value, (str, Path)):
+        return ()
+    return tuple(
+        part
+        for part in re.split(r"[\\/]+", str(value).strip())
+        if part and part != "."
+    )
+
+
+def detection_result_key(record):
+    """Map one saved detection to its Flakes Found chip/image key."""
+    if not isinstance(record, dict):
+        return None
+    parts = _path_parts(record.get("result_image"))
+    if len(parts) >= 2:
+        return parts[-2].casefold(), parts[-1].casefold()
+
+    parts = _path_parts(record.get("source_image"))
+    if not parts:
+        return None
+    filename = parts[-1]
+    chip = None
+    for index in range(len(parts) - 2, 0, -1):
+        if parts[index].casefold() in {"raw", "processed"}:
+            chip = parts[index - 1]
+            break
+    if chip is None and len(parts) >= 2:
+        chip = parts[-2]
+    if not chip or not filename:
+        return None
+    return chip.casefold(), filename.casefold()
+
+
+def result_image_key(path):
+    path = Path(path)
+    return path.parent.name.casefold(), path.name.casefold()
+
+
+def _finite_number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _first_number(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        number = _finite_number(mapping.get(key))
+        if number is not None:
+            return number
+    return None
+
+
+def _format_number(value, unit, *, decimal_places=2):
+    if value is None:
+        return "—"
+    text = f"{value:,.{decimal_places}f}"
+    if decimal_places:
+        text = text.rstrip("0").rstrip(".")
+    return f"{text} {unit}" if unit else text
+
+
+def format_region_statistics(record):
+    """Format optional v2 measurements without rejecting legacy records."""
+    if not isinstance(record, dict):
+        record = {}
+    statistics = record.get("statistics")
+    if not isinstance(statistics, dict):
+        statistics = {}
+    bounding_box = record.get("bounding_box_px")
+    if not isinstance(bounding_box, dict):
+        bounding_box = {}
+
+    area_um2 = _first_number(statistics, "area_um2")
+    size_um = _first_number(statistics, "size_um")
+    width_um = _first_number(statistics, "width_um", "bounding_width_um")
+    height_um = _first_number(statistics, "height_um", "bounding_height_um")
+    perimeter_um = _first_number(statistics, "perimeter_um")
+    ratio_per_um = _first_number(
+        statistics,
+        "perimeter_area_ratio_per_um",
+        "perimeter_to_area_ratio_per_um",
+        "perimeter_area_ratio",
+    )
+
+    pixel_count = _first_number(statistics, "pixel_count", "area_px2")
+    width_px = _first_number(statistics, "width_px")
+    height_px = _first_number(statistics, "height_px")
+    perimeter_px = _first_number(statistics, "perimeter_px")
+    x_px = _first_number(bounding_box, "x")
+    y_px = _first_number(bounding_box, "y")
+    if width_px is None:
+        width_px = _first_number(bounding_box, "width")
+    if height_px is None:
+        height_px = _first_number(bounding_box, "height")
+    size_px = (
+        max(width_px, height_px)
+        if width_px is not None and height_px is not None
+        else None
+    )
+    ratio_per_px = (
+        perimeter_px / pixel_count
+        if perimeter_px is not None and pixel_count is not None and pixel_count > 0
+        else None
+    )
+
+    classification = record.get("classification")
+    classification = str(classification).strip() if classification is not None else ""
+    group = record.get("classification_group")
+    group = str(group).strip() if group is not None else ""
+
+    area_text = (
+        _format_number(area_um2, "µm²", decimal_places=2)
+        if area_um2 is not None
+        else _format_number(pixel_count, "px²", decimal_places=0)
+    )
+    width_text = (
+        _format_number(width_um, "µm", decimal_places=2)
+        if width_um is not None
+        else _format_number(width_px, "px", decimal_places=0)
+    )
+    height_text = (
+        _format_number(height_um, "µm", decimal_places=2)
+        if height_um is not None
+        else _format_number(height_px, "px", decimal_places=0)
+    )
+    perimeter_text = (
+        _format_number(perimeter_um, "µm", decimal_places=2)
+        if perimeter_um is not None
+        else _format_number(perimeter_px, "px", decimal_places=2)
+    )
+    size_text = (
+        _format_number(size_um, "µm", decimal_places=2)
+        if size_um is not None
+        else _format_number(size_px, "px", decimal_places=0)
+    )
+    ratio_text = (
+        _format_number(ratio_per_um, "µm⁻¹", decimal_places=4)
+        if ratio_per_um is not None
+        else _format_number(ratio_per_px, "px⁻¹", decimal_places=4)
+    )
+
+    return "\n".join((
+        f"Class: {classification or '—'}",
+        f"Group: {group or '—'}",
+        f"Area: {area_text}",
+        f"Size: {size_text}",
+        f"Width: {width_text}",
+        f"Height: {height_text}",
+        f"Perimeter: {perimeter_text}",
+        f"Perimeter / area: {ratio_text}",
+        f"Pixels: {_format_number(pixel_count, 'px', decimal_places=0)}",
+        "Box (px): "
+        f"x {_format_number(x_px, '', decimal_places=0)}, "
+        f"y {_format_number(y_px, '', decimal_places=0)}, "
+        f"{_format_number(width_px, '', decimal_places=0)} × "
+        f"{_format_number(height_px, '', decimal_places=0)}",
+    ))
 
 
 def _natural_sort_key(value):
@@ -51,6 +231,13 @@ class ViewScansPanel:
         self.capture_chip_folder = None
         self.magnification_roots = {}
         self.available_result_views = set()
+        self.region_records_by_image = {}
+        self.current_regions = []
+        self.current_region_key = None
+        self.view_region_index = 0
+        self.current_result_path = None
+        self._processed_region_cache_path = None
+        self._processed_region_cache_rgb = None
         self.tile_viewer = SparseTileViewer(self.app.scan_results_canvas)
 
         self.results_menu = None
@@ -148,6 +335,87 @@ class ViewScansPanel:
             pady=(0, 8),
         )
 
+        self.region_var = tk.StringVar(value="Region: None")
+        self.region_statistics_var = tk.StringVar(value="Statistics unavailable")
+        self.region_group = Frame(self.content, bg="white")
+        self.region_group.columnconfigure(0, weight=1)
+        self.region_label = Label(
+            self.region_group,
+            textvariable=self.region_var,
+            bg="white",
+            fg="black",
+            font=("TkDefaultFont", 10, "bold"),
+            justify="center",
+            wraplength=176,
+        )
+        self.region_label.grid(row=0, column=0, sticky="ew")
+        self.region_statistics_label = Label(
+            self.region_group,
+            textvariable=self.region_statistics_var,
+            bg="white",
+            fg="#333333",
+            justify="left",
+            anchor="w",
+            wraplength=176,
+        )
+        self.region_statistics_label.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(3, 5),
+        )
+        self.region_button_panel = Frame(self.region_group, bg="white")
+        self.region_button_panel.grid(row=2, column=0, sticky="ew")
+        self.region_button_panel.columnconfigure(0, weight=1)
+        self.region_button_panel.columnconfigure(1, weight=1)
+        self.btn_previous_region = ttk.Button(
+            self.region_button_panel,
+            text="\u25c2 Region",
+            command=self.previous_region,
+        )
+        self.btn_next_region = ttk.Button(
+            self.region_button_panel,
+            text="Region \u25b8",
+            command=self.next_region,
+        )
+        self.btn_previous_region.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 2),
+        )
+        self.btn_next_region.grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(2, 0),
+        )
+        self.display_everything_var = tk.BooleanVar(value=False)
+        self.display_everything_checkbox = ttk.Checkbutton(
+            self.region_group,
+            text="Display everything",
+            variable=self.display_everything_var,
+            command=self._toggle_region_display,
+            style="ScanResults.TCheckbutton",
+        )
+        self.display_everything_checkbox.grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=(4, 0),
+        )
+        self.save_database_button = ttk.Button(
+            self.region_group,
+            text="Save selected to database",
+            command=self.save_selected_region_to_database,
+        )
+        self.save_database_button.grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            pady=(5, 0),
+        )
+
         self.filtered_map_var = tk.BooleanVar(value=False)
         self.filtered_map_checkbox = ttk.Checkbutton(
             self.content,
@@ -197,13 +465,17 @@ class ViewScansPanel:
         self._show_navigation = True
         self._show_filter_toggle = False
         self._show_raw_result_toggle = False
+        self._show_region_details = False
         self._resize_job = None
         self.scan_name_var.trace_add("write", self._queue_panel_resize)
         self.image_var.trace_add("write", self._queue_panel_resize)
+        self.region_var.trace_add("write", self._queue_panel_resize)
+        self.region_statistics_var.trace_add("write", self._queue_panel_resize)
         self._layout_controls(
             show_chip=True,
             show_navigation=True,
             show_filter_toggle=False,
+            show_region_details=False,
         )
 
     def _queue_panel_resize(self, *_args):
@@ -218,6 +490,7 @@ class ViewScansPanel:
             self.scan_name_label,
             self.chip_dropdown,
             self.image_label,
+            self.region_group,
             self.filtered_map_checkbox,
             self.raw_result_checkbox,
             self.button_panel,
@@ -240,6 +513,7 @@ class ViewScansPanel:
         show_navigation=None,
         show_filter_toggle=None,
         show_raw_result_toggle=None,
+        show_region_details=None,
     ):
         if show_chip is not None:
             self._show_chip = bool(show_chip)
@@ -249,14 +523,26 @@ class ViewScansPanel:
             self._show_filter_toggle = bool(show_filter_toggle)
         if show_raw_result_toggle is not None:
             self._show_raw_result_toggle = bool(show_raw_result_toggle)
+        if show_region_details is not None:
+            self._show_region_details = bool(show_region_details)
         if self._show_chip:
             self.chip_dropdown.grid()
         else:
             self.chip_dropdown.grid_remove()
 
+        if self._show_region_details:
+            self.region_group.grid(
+                row=4,
+                column=0,
+                sticky="ew",
+                pady=(0, 8),
+            )
+        else:
+            self.region_group.grid_remove()
+
         if self._show_filter_toggle:
             self.filtered_map_checkbox.grid(
-                row=4,
+                row=5,
                 column=0,
                 sticky="w",
                 pady=(0, 8),
@@ -266,7 +552,7 @@ class ViewScansPanel:
 
         if self._show_raw_result_toggle:
             self.raw_result_checkbox.grid(
-                row=5,
+                row=6,
                 column=0,
                 sticky="w",
                 pady=(0, 8),
@@ -277,7 +563,7 @@ class ViewScansPanel:
         self.button_panel.grid_remove()
         if self._show_navigation:
             self.button_panel.grid(
-                row=6,
+                row=7,
                 column=0,
                 pady=(0, 2),
             )
@@ -545,7 +831,287 @@ class ViewScansPanel:
         ):
             self.raw_result_var.set(False)
             return
-        self.display_current_image()
+        self.display_current_image(preserve_region=True)
+
+    @staticmethod
+    def _load_region_records(scan_path):
+        """Load and index optional result metadata without blocking image use."""
+        manifest_path = Path(scan_path) / "flakes_found.json"
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        detections = payload.get("detections")
+        if not isinstance(detections, list):
+            return {}
+
+        detection_model = str(payload.get("detection_model", "")).casefold()
+        indexed = {}
+        for record in detections:
+            if not isinstance(record, dict) or record.get("accepted") is False:
+                continue
+            if detection_model == "flake detection" and "class_id" in record:
+                try:
+                    is_good_flake = int(record["class_id"]) == 1
+                except (TypeError, ValueError, OverflowError):
+                    is_good_flake = False
+                if not is_good_flake:
+                    continue
+            key = detection_result_key(record)
+            if key is not None:
+                indexed.setdefault(key, []).append(record)
+        return indexed
+
+    def _clear_current_regions(self):
+        self.current_regions = []
+        self.current_region_key = None
+        self.view_region_index = 0
+        self.current_result_path = None
+        self._processed_region_cache_path = None
+        self._processed_region_cache_rgb = None
+        if hasattr(self, "region_var"):
+            self.region_var.set("Region: None")
+            self.region_statistics_var.set("Statistics unavailable")
+            self._configure_region_buttons(0)
+        viewer = getattr(self, "tile_viewer", None)
+        if viewer is not None and hasattr(viewer, "set_highlight"):
+            viewer.set_highlight(None)
+
+    def _set_current_regions(self, result_path, preserve_region=False):
+        key = result_image_key(result_path)
+        same_image = key == self.current_region_key
+        self.current_region_key = key
+        self.current_regions = list(
+            getattr(self, "region_records_by_image", {}).get(key, ())
+        )
+        if not preserve_region or not same_image:
+            self.view_region_index = 0
+        elif self.current_regions:
+            self.view_region_index %= len(self.current_regions)
+        else:
+            self.view_region_index = 0
+        self._show_current_region()
+
+    def _configure_region_buttons(self, region_count):
+        if not hasattr(self, "btn_previous_region"):
+            return
+        state = ["!disabled"] if region_count > 1 else ["disabled"]
+        self.btn_previous_region.state(state)
+        self.btn_next_region.state(state)
+        if hasattr(self, "display_everything_checkbox"):
+            display_state = ["!disabled"] if region_count else ["disabled"]
+            self.display_everything_checkbox.state(display_state)
+        self._configure_database_button()
+
+    def _configure_database_button(self):
+        button = getattr(self, "save_database_button", None)
+        if button is None:
+            return
+        regions = getattr(self, "current_regions", ())
+        selected = (
+            regions[self.view_region_index % len(regions)]
+            if regions
+            else None
+        )
+        enabled = (
+            isinstance(selected, dict)
+            and bool(selected.get("image_20x"))
+            and bool(selected.get("image_100x"))
+            and getattr(self, "view_scan_path", None) is not None
+        )
+        button.state(["!disabled"] if enabled else ["disabled"])
+
+    def _show_current_region(self, fit_image=False):
+        regions = getattr(self, "current_regions", ())
+        if not regions:
+            if hasattr(self, "region_var"):
+                self.region_var.set("Region: None")
+                self.region_statistics_var.set("Statistics unavailable")
+                self._configure_region_buttons(0)
+            self._update_region_highlight()
+            return
+
+        self.view_region_index %= len(regions)
+        record = regions[self.view_region_index]
+        if hasattr(self, "region_var"):
+            self.region_var.set(
+                f"Region {self.view_region_index + 1} of {len(regions)}"
+            )
+            self.region_statistics_var.set(format_region_statistics(record))
+            self._configure_region_buttons(len(regions))
+        self._update_region_highlight(fit_image=fit_image)
+
+    def _toggle_region_display(self):
+        self._update_region_highlight(fit_image=True)
+
+    def _update_region_highlight(self, fit_image=False):
+        """Render the full processed image with only the focus shape colored."""
+        viewer = getattr(self, "tile_viewer", None)
+        if viewer is None:
+            return
+        if hasattr(viewer, "set_highlight"):
+            viewer.set_highlight(None)
+        raw_var = getattr(self, "raw_result_var", None)
+        if raw_var is not None and raw_var.get():
+            return
+        if not self.current_regions or self.current_result_path is None:
+            return
+
+        display_var = getattr(self, "display_everything_var", None)
+        show_everything = (
+            bool(display_var.get()) if display_var is not None else False
+        )
+        processed_path = self._processed_result_path(self.current_result_path)
+        if processed_path is None:
+            processed_path = self.current_result_path
+        image_rgb = self._load_processed_region_image(processed_path)
+        if image_rgb is None:
+            return
+        if not show_everything:
+            record = self.current_regions[
+                self.view_region_index % len(self.current_regions)
+            ]
+            image_rgb = self._focused_region_image(image_rgb, record)
+
+        view_state = None
+        if not fit_image and hasattr(viewer, "capture_view_state"):
+            view_state = viewer.capture_view_state()
+        if hasattr(viewer, "load_rgb_image"):
+            viewer.load_rgb_image(
+                image_rgb,
+                title=self.current_result_path.name,
+                nearest=True,
+                view_state=view_state,
+            )
+
+    def _load_processed_region_image(self, path):
+        path = Path(path)
+        if path == self._processed_region_cache_path:
+            return self._processed_region_cache_rgb.copy()
+        image_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image_bgr is None:
+            return None
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        self._processed_region_cache_path = path
+        self._processed_region_cache_rgb = image_rgb
+        return image_rgb.copy()
+
+    @staticmethod
+    def _decoded_region_mask(record):
+        encoded = record.get("region_mask") if isinstance(record, dict) else None
+        if not isinstance(encoded, dict):
+            return None
+        if encoded.get("encoding") != "foreground-runs-row-major":
+            return None
+        try:
+            width = int(encoded["width"])
+            height = int(encoded["height"])
+            runs = list(encoded["runs"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if width <= 0 or height <= 0 or len(runs) % 2:
+            return None
+        flat = np.zeros(width * height, dtype=bool)
+        try:
+            for offset in range(0, len(runs), 2):
+                start = int(runs[offset])
+                length = int(runs[offset + 1])
+                if start < 0 or length <= 0 or start + length > flat.size:
+                    return None
+                flat[start:start + length] = True
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return flat.reshape(height, width)
+
+    @classmethod
+    def _focused_region_image(cls, image_rgb, record):
+        focused = np.full_like(image_rgb, 255)
+        if not isinstance(record, dict):
+            return focused
+        box = record.get("bounding_box_px")
+        if not isinstance(box, dict):
+            return focused
+        try:
+            x = int(round(float(box["x"])))
+            y = int(round(float(box["y"])))
+            width = max(1, int(round(float(box["width"]))))
+            height = max(1, int(round(float(box["height"]))))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return focused
+        image_height, image_width = image_rgb.shape[:2]
+        x1, y1 = max(0, x), max(0, y)
+        x2, y2 = min(image_width, x + width), min(image_height, y + height)
+        if x1 >= x2 or y1 >= y2:
+            return focused
+
+        source = image_rgb[y1:y2, x1:x2]
+        local_mask = cls._decoded_region_mask(record)
+        if local_mask is not None:
+            mask_x1, mask_y1 = x1 - x, y1 - y
+            local_mask = local_mask[
+                mask_y1:mask_y1 + (y2 - y1),
+                mask_x1:mask_x1 + (x2 - x1),
+            ]
+        if local_mask is None or local_mask.shape != source.shape[:2]:
+            color = record.get("display_color_rgb")
+            try:
+                color = np.asarray(color, dtype=np.uint8).reshape(1, 1, 3)
+                local_mask = np.all(source == color, axis=2)
+            except (TypeError, ValueError):
+                local_mask = np.any(source < 250, axis=2)
+        target = focused[y1:y2, x1:x2]
+        color = record.get("display_color_rgb")
+        try:
+            color = tuple(int(channel) for channel in color)
+        except (TypeError, ValueError):
+            color = None
+        if color is not None and len(color) == 3:
+            target[local_mask] = color
+        else:
+            target[local_mask] = source[local_mask]
+        return focused
+
+    def save_selected_region_to_database(self):
+        if not self.current_regions or self.view_scan_path is None:
+            return
+        record = self.current_regions[
+            self.view_region_index % len(self.current_regions)
+        ]
+        try:
+            exported = flake_detection.save_database(self.view_scan_path, record)
+        except (OSError, TypeError, ValueError) as exc:
+            messagebox.showerror(
+                "Database Export Error",
+                str(exc),
+                parent=self.root,
+            )
+            return
+        messagebox.showinfo(
+            "Database Export Complete",
+            "Saved the selected 20X image, 100X image, and JSON to:\n"
+            f"{exported['json'].parent}",
+            parent=self.root,
+        )
+
+    def previous_region(self, event=None):
+        if self.app.get_view() != "Scan Results" or not self.current_regions:
+            return
+        self.view_region_index = (
+            self.view_region_index - 1
+        ) % len(self.current_regions)
+        self._show_current_region(fit_image=True)
+        self.root.focus_set()
+
+    def next_region(self, event=None):
+        if self.app.get_view() != "Scan Results" or not self.current_regions:
+            return
+        self.view_region_index = (
+            self.view_region_index + 1
+        ) % len(self.current_regions)
+        self._show_current_region(fit_image=True)
+        self.root.focus_set()
 
     def open_scan(self):
         folder = filedialog.askdirectory(title="Select Scan Folder")
@@ -555,9 +1121,7 @@ class ViewScansPanel:
         path = Path(folder)
         folder_name = path.name
 
-        pattern = r"^Full Scan \(\d{4}-\d{2}-\d{2}\) \(\d{2}-\d{2}-\d{2}\)$"
-
-        if not re.match(pattern, folder_name):
+        if not is_scan_folder_name(folder_name):
             messagebox.showwarning(
                 "Invalid Folder",
                 "Selected folder is not a valid scan folder."
@@ -565,6 +1129,8 @@ class ViewScansPanel:
             return
 
         self.view_scan_path = path
+        self.region_records_by_image = self._load_region_records(path)
+        self._clear_current_regions()
         self.scan_name_var.set(folder_name)
         self.selected_view = None
         self.chip_var.set("")
@@ -573,6 +1139,7 @@ class ViewScansPanel:
         self._layout_controls(
             show_filter_toggle=False,
             show_raw_result_toggle=False,
+            show_region_details=False,
         )
         self.magnification_roots, self.available_result_views = (
             self._discover_result_layers()
@@ -608,10 +1175,13 @@ class ViewScansPanel:
             if preserve_context
             else None
         )
+        previous_view = self.selected_view
         if not preserve_context:
             self.view_chip_index = 0
             self.view_image_index = 0
         self.selected_view = selected_view
+        if selected_view != previous_view or selected_view != "Flakes Found":
+            self._clear_current_regions()
         self.sparse_map_mode = selected_view not in INDIVIDUAL_IMAGE_VIEWS
         self.chip_root = None
         self.chip_source_folder = None
@@ -624,6 +1194,7 @@ class ViewScansPanel:
             show_chip=False,
             show_navigation=False,
             show_raw_result_toggle=False,
+            show_region_details=False,
         )
 
         base_path = self.view_scan_path / "All Images"
@@ -806,8 +1377,10 @@ class ViewScansPanel:
                 self._layout_controls(
                     show_chip=False,
                     show_navigation=False,
+                    show_region_details=True,
                 )
                 self.image_var.set("Image: No flakes found")
+                self._clear_current_regions()
                 self.tile_viewer.clear("No flakes found in this scan")
                 return
 
@@ -826,6 +1399,7 @@ class ViewScansPanel:
                     and self._capture_has_both_sources()
                 )
             ),
+            show_region_details=selected_view == "Flakes Found",
         )
         self.load_current_folder(view_state=view_state)
 
@@ -891,6 +1465,7 @@ class ViewScansPanel:
 
         if not self.image_files:
             self.image_var.set("Image: None")
+            self._clear_current_regions()
             messagebox.showwarning(
                 "No Images Found",
                 f"No images found in:\n{self.view_folder}"
@@ -900,11 +1475,20 @@ class ViewScansPanel:
         self.view_image_index = 0
         self.display_current_image()
 
-    def display_current_image(self):
+    def display_current_image(self, preserve_region=False):
         if not self.image_files:
             return
 
         result_path = self.image_files[self.view_image_index]
+        if self.selected_view == "Flakes Found":
+            self.current_result_path = None
+            self._set_current_regions(
+                result_path,
+                preserve_region=preserve_region,
+            )
+            self.current_result_path = result_path
+        else:
+            self._clear_current_regions()
         img_path = result_path
         showing_raw = (
             (
@@ -946,6 +1530,8 @@ class ViewScansPanel:
                 f"Could not read image:\n{img_path}"
             )
             return
+        if self.selected_view == "Flakes Found" and self.current_regions:
+            self._update_region_highlight(fit_image=True)
 
     def _raw_result_path(self, result_path):
         if self.view_scan_path is None:
@@ -959,6 +1545,26 @@ class ViewScansPanel:
             chip_folder = self._named_child(root, chip_name)
             raw_folder = self._named_child(chip_folder, "Raw")
             candidate = raw_folder / result_path.name if raw_folder else None
+            if candidate is not None and candidate.is_file():
+                return candidate
+        return None
+
+    def _processed_result_path(self, result_path):
+        if self.view_scan_path is None:
+            return None
+        chip_name = result_path.parent.name
+        for magnification in ("10x", "20x"):
+            root = self._magnification_root(
+                magnification,
+                self.view_scan_path / "All Images",
+            )
+            chip_folder = self._named_child(root, chip_name)
+            processed_folder = self._named_child(chip_folder, "Processed")
+            candidate = (
+                processed_folder / result_path.name
+                if processed_folder is not None
+                else None
+            )
             if candidate is not None and candidate.is_file():
                 return candidate
         return None

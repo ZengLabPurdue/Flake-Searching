@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import json
 import os
 from pathlib import Path
 import sys
@@ -23,7 +24,12 @@ from UI.display_acceleration import (  # noqa: E402
     requested_backend,
 )
 from UI.sparse_tile_viewer import SparseTileViewer  # noqa: E402
-from UI.panels.view_scans_panel import ViewScansPanel  # noqa: E402
+from UI.panels.view_scans_panel import (  # noqa: E402
+    ViewScansPanel,
+    detection_result_key,
+    format_region_statistics,
+    is_scan_folder_name,
+)
 
 
 class _FakeCanvas:
@@ -94,6 +100,27 @@ class DisplayAccelerationTests(unittest.TestCase):
         )
 
         self.assertIsNone(sampled)
+
+    def test_in_memory_region_image_uses_the_normal_pyramid_cache(self):
+        viewer = self._viewer_without_tk()
+        pixels = np.zeros((8, 10, 3), dtype=np.uint8)
+        pixels[:, :, 1] = 180
+        record = {
+            "path": Path("memory-region.png"),
+            "source_image": Image.fromarray(pixels),
+            "cache_key": "memory-region-test",
+        }
+
+        sampled = viewer._sampled_tile(
+            record,
+            factor=2,
+            nearest=True,
+            generation=1,
+        )
+
+        self.assertEqual(sampled.size, (5, 4))
+        self.assertTrue(np.all(np.asarray(sampled)[:, :, 1] == 180))
+        self.assertEqual(len(viewer._sampled_cache), 1)
 
     def test_map_view_state_preserves_relative_position_and_zoom(self):
         source = self._viewer_without_tk()
@@ -263,12 +290,407 @@ class DisplayAccelerationTests(unittest.TestCase):
         panel.capture_images_mode = True
         panel.raw_result_var = _FakeVariable(True)
         refreshed = []
-        panel.display_current_image = lambda: refreshed.append(True)
+        panel.display_current_image = lambda **kwargs: refreshed.append(kwargs)
 
         panel._toggle_raw_result()
 
-        self.assertEqual(refreshed, [True])
+        self.assertEqual(refreshed, [{"preserve_region": True}])
         self.assertTrue(panel.raw_result_var.get())
+
+    def test_flakes_found_raw_toggle_preserves_selected_region(self):
+        panel = ViewScansPanel.__new__(ViewScansPanel)
+        panel.selected_view = "Flakes Found"
+        panel.capture_images_mode = False
+        panel.raw_result_var = _FakeVariable(True)
+        refreshed = []
+        panel.display_current_image = lambda **kwargs: refreshed.append(kwargs)
+
+        panel._toggle_raw_result()
+
+        self.assertEqual(refreshed, [{"preserve_region": True}])
+
+    def test_detection_result_key_normalizes_source_path_slashes(self):
+        expected = ("wafer 7", "img_20x_3.png")
+
+        self.assertEqual(
+            detection_result_key({
+                "source_image": (
+                    "All Images/20x/wafer 7/Raw/img_20x_3.png"
+                ),
+            }),
+            expected,
+        )
+        self.assertEqual(
+            detection_result_key({
+                "source_image": (
+                    r"All Images\20x\wafer 7\Raw\img_20x_3.png"
+                ),
+            }),
+            expected,
+        )
+        self.assertEqual(
+            detection_result_key({
+                "result_image": "Flakes Found/Wafer 7/IMG_20X_3.PNG",
+            }),
+            expected,
+        )
+
+    def test_scan_folder_name_accepts_full_and_100x_scans_only(self):
+        self.assertTrue(
+            is_scan_folder_name("Full Scan (2026-07-31) (14-05-09)")
+        )
+        self.assertTrue(
+            is_scan_folder_name("100x Scan (2026-07-31) (14-05-09)")
+        )
+        for folder_name in (
+            "Scan (2026-07-31) (14-05-09)",
+            "100X Scan (2026-07-31) (14-05-09)",
+            "100x Scan (2026-07-31)",
+            "Full Scan (2026-7-31) (14-05-09)",
+            "Full Scan (2026-07-31) (14-05-09) backup",
+        ):
+            with self.subTest(folder_name=folder_name):
+                self.assertFalse(is_scan_folder_name(folder_name))
+
+    def test_detection_manifest_indexes_duplicate_filenames_by_chip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            records = [
+                {
+                    "classification": "A",
+                    "source_image": (
+                        "All Images/10x/wafer 1/Raw/img_10x_0.png"
+                    ),
+                },
+                {
+                    "classification": "B",
+                    "source_image": (
+                        r"All Images\10x\wafer 2\Raw\img_10x_0.png"
+                    ),
+                },
+                {"classification": "missing source"},
+            ]
+            (scan_path / "flakes_found.json").write_text(
+                json.dumps({"version": 2, "detections": records}),
+                encoding="utf-8",
+            )
+
+            indexed = ViewScansPanel._load_region_records(scan_path)
+
+            self.assertEqual(
+                indexed[("wafer 1", "img_10x_0.png")][0]["classification"],
+                "A",
+            )
+            self.assertEqual(
+                indexed[("wafer 2", "img_10x_0.png")][0]["classification"],
+                "B",
+            )
+            self.assertEqual(len(indexed), 2)
+
+    def test_detection_manifest_indexes_only_accepted_good_regions(self):
+        source = "All Images/10x/wafer 1/Raw/img_10x_0.png"
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            (scan_path / "flakes_found.json").write_text(
+                json.dumps({
+                    "detection_model": "Flake Detection",
+                    "detections": [
+                        {"source_image": source, "class_id": 0},
+                        {"source_image": source, "class_id": 1},
+                        {"source_image": source, "class_id": 2},
+                        {
+                            "source_image": source,
+                            "class_id": 1,
+                            "accepted": False,
+                        },
+                        {
+                            "source_image": source,
+                            "classification": "Legacy good record",
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            indexed = ViewScansPanel._load_region_records(scan_path)
+
+        records = indexed[("wafer 1", "img_10x_0.png")]
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["class_id"], 1)
+        self.assertEqual(records[1]["classification"], "Legacy good record")
+
+    def test_detection_manifest_skips_explicitly_rejected_profile_regions(self):
+        source = "All Images/20x/wafer 2/Raw/img_20x_4.png"
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            (scan_path / "flakes_found.json").write_text(
+                json.dumps({
+                    "detection_model": "Region Detection",
+                    "detections": [
+                        {
+                            "source_image": source,
+                            "classification": "Accepted",
+                            "accepted": True,
+                        },
+                        {
+                            "source_image": source,
+                            "classification": "Rejected",
+                            "accepted": False,
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            indexed = ViewScansPanel._load_region_records(scan_path)
+
+        records = indexed[("wafer 2", "img_20x_4.png")]
+        self.assertEqual(
+            [record["classification"] for record in records],
+            ["Accepted"],
+        )
+
+    def test_missing_or_malformed_detection_manifest_is_nonfatal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            self.assertEqual(
+                ViewScansPanel._load_region_records(scan_path),
+                {},
+            )
+
+            (scan_path / "flakes_found.json").write_text(
+                "not json",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                ViewScansPanel._load_region_records(scan_path),
+                {},
+            )
+
+            (scan_path / "flakes_found.json").write_text(
+                json.dumps({"detections": "not a list"}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                ViewScansPanel._load_region_records(scan_path),
+                {},
+            )
+
+    def test_region_statistics_show_physical_and_pixel_measurements(self):
+        text = format_region_statistics({
+            "classification": "Thin flake",
+            "classification_group": "Graphene",
+            "bounding_box_px": {
+                "x": 12,
+                "y": 24,
+                "width": 40,
+                "height": 20,
+            },
+            "statistics": {
+                "pixel_count": 512,
+                "size_um": 10.0,
+                "area_um2": 32.125,
+                "width_um": 10.0,
+                "height_um": 5.0,
+                "perimeter_px": 120.5,
+                "perimeter_um": 30.125,
+                "perimeter_area_ratio_per_um": 0.9375,
+            },
+        })
+
+        self.assertIn("Class: Thin flake", text)
+        self.assertIn("Group: Graphene", text)
+        self.assertIn("Area: 32.12 µm²", text)
+        self.assertIn("Size: 10 µm", text)
+        self.assertIn("Width: 10 µm", text)
+        self.assertIn("Height: 5 µm", text)
+        self.assertIn("Perimeter: 30.12 µm", text)
+        self.assertIn("Perimeter / area: 0.9375 µm⁻¹", text)
+        self.assertIn("Pixels: 512 px", text)
+        self.assertIn("Box (px): x 12, y 24, 40 × 20", text)
+
+    def test_legacy_region_statistics_use_bbox_and_unavailable_markers(self):
+        text = format_region_statistics({
+            "classification": "Legacy",
+            "bounding_box_px": {"width": 31, "height": 17},
+        })
+
+        self.assertIn("Area: —", text)
+        self.assertIn("Size: 31 px", text)
+        self.assertIn("Width: 31 px", text)
+        self.assertIn("Height: 17 px", text)
+        self.assertIn("Box (px): x —, y —, 31 × 17", text)
+
+    def test_uncalibrated_statistics_fall_back_to_pixel_units(self):
+        text = format_region_statistics({
+            "bounding_box_px": {
+                "x": 2,
+                "y": 3,
+                "width": 10,
+                "height": 8,
+            },
+            "statistics": {
+                "pixel_count": 80,
+                "perimeter_px": 40,
+            },
+        })
+
+        self.assertIn("Area: 80 px²", text)
+        self.assertIn("Size: 10 px", text)
+        self.assertIn("Perimeter: 40 px", text)
+        self.assertIn("Perimeter / area: 0.5 px⁻¹", text)
+
+    def test_region_navigation_wraps_without_changing_image(self):
+        panel = ViewScansPanel.__new__(ViewScansPanel)
+        panel.current_regions = [{"id": 1}, {"id": 2}, {"id": 3}]
+        panel.view_region_index = 0
+        panel.app = type("_App", (), {"get_view": lambda _self: "Scan Results"})()
+        focus_calls = []
+        panel.root = type("_Root", (), {"focus_set": lambda _self: None})()
+        panel._show_current_region = (
+            lambda fit_image=False: focus_calls.append(fit_image)
+        )
+
+        panel.previous_region()
+        self.assertEqual(panel.view_region_index, 2)
+        panel.next_region()
+        self.assertEqual(panel.view_region_index, 0)
+        panel.next_region()
+        self.assertEqual(panel.view_region_index, 1)
+        self.assertEqual(focus_calls, [True, True, True])
+
+    def test_region_selection_resets_for_image_and_survives_raw_toggle(self):
+        first_path = Path("Flakes Found") / "wafer 1" / "img_10x_0.png"
+        second_path = Path("Flakes Found") / "wafer 2" / "img_10x_0.png"
+        first_key = ("wafer 1", "img_10x_0.png")
+        second_key = ("wafer 2", "img_10x_0.png")
+        panel = ViewScansPanel.__new__(ViewScansPanel)
+        panel.region_records_by_image = {
+            first_key: [{"id": 1}, {"id": 2}],
+            second_key: [{"id": 3}],
+        }
+        panel.current_region_key = first_key
+        panel.current_regions = panel.region_records_by_image[first_key]
+        panel.view_region_index = 1
+        panel._show_current_region = lambda fit_image=False: None
+
+        panel._set_current_regions(first_path, preserve_region=True)
+        self.assertEqual(panel.view_region_index, 1)
+
+        panel._set_current_regions(first_path, preserve_region=False)
+        self.assertEqual(panel.view_region_index, 0)
+
+        panel.view_region_index = 1
+        panel._set_current_regions(second_path, preserve_region=True)
+        self.assertEqual(panel.view_region_index, 0)
+        self.assertEqual(panel.current_regions, [{"id": 3}])
+
+    def test_region_navigation_keeps_full_image_and_colors_only_focus_shape(self):
+        loaded = []
+        viewer = type(
+            "_Viewer",
+            (),
+            {
+                "set_highlight": lambda _self, _bounds: None,
+                "load_rgb_image": (
+                    lambda _self, image, **options: loaded.append(
+                        (image.copy(), options)
+                    )
+                ),
+            },
+        )()
+        panel = ViewScansPanel.__new__(ViewScansPanel)
+        panel.tile_viewer = viewer
+        panel.current_result_path = Path("result.png")
+        panel.raw_result_var = _FakeVariable(False)
+        panel._processed_result_path = lambda _path: Path("processed.png")
+        processed = np.full((12, 16, 3), 255, dtype=np.uint8)
+        processed[4:7, 5:9] = (12, 34, 56)
+        panel._load_processed_region_image = lambda _path: processed.copy()
+        panel.current_regions = [{
+            "bounding_box_px": {
+                "x": 5,
+                "y": 4,
+                "width": 4,
+                "height": 3,
+            },
+            "display_color_rgb": [12, 34, 56],
+            "region_mask": {
+                "encoding": "foreground-runs-row-major",
+                "width": 4,
+                "height": 3,
+                "runs": [0, 2, 5, 2, 10, 2],
+            },
+        }]
+        panel.view_region_index = 0
+        panel.display_everything_var = _FakeVariable(False)
+
+        panel._update_region_highlight(fit_image=True)
+
+        focused = loaded[-1][0]
+        expected_mask = np.zeros((3, 4), dtype=bool)
+        expected_mask.reshape(-1)[[0, 1, 5, 6, 10, 11]] = True
+        self.assertTrue(np.all(focused[4:7, 5:9][expected_mask] == (12, 34, 56)))
+        self.assertTrue(np.all(focused[4:7, 5:9][~expected_mask] == 255))
+        self.assertTrue(np.all(focused[:4] == 255))
+        self.assertIsNone(loaded[-1][1]["view_state"])
+
+        panel.display_everything_var.set(True)
+        panel._update_region_highlight(fit_image=True)
+        self.assertTrue(np.array_equal(loaded[-1][0], processed))
+
+    def test_selected_100x_region_is_sent_to_database_export(self):
+        panel = ViewScansPanel.__new__(ViewScansPanel)
+        panel.current_regions = [{
+            "classification": "Thin",
+            "image_20x": "All Images/20x/group.png",
+            "image_100x": "All Images/100x/group.png",
+        }]
+        panel.view_region_index = 0
+        panel.view_scan_path = Path("100x Scan (2026-07-31) (12-00-00)")
+        panel.root = object()
+        exported_json = Path("to_read/selected.json")
+
+        with (
+            patch(
+                "UI.panels.view_scans_panel.flake_detection.save_database",
+                return_value={"json": exported_json},
+            ) as save_database,
+            patch("UI.panels.view_scans_panel.messagebox.showinfo") as showinfo,
+        ):
+            panel.save_selected_region_to_database()
+
+        save_database.assert_called_once_with(
+            panel.view_scan_path,
+            panel.current_regions[0],
+        )
+        self.assertIn("to_read", showinfo.call_args.args[1])
+
+    def test_sparse_viewer_highlight_has_a_visible_minimum_size(self):
+        rectangles = []
+        labels = []
+
+        class Canvas:
+            @staticmethod
+            def create_rectangle(*coordinates, **options):
+                rectangles.append((coordinates, options))
+
+            @staticmethod
+            def create_text(*coordinates, **options):
+                labels.append((coordinates, options))
+
+        viewer = SparseTileViewer.__new__(SparseTileViewer)
+        viewer.canvas = Canvas()
+        viewer.scale = 0.1
+        viewer.highlight_bounds = (100.0, 200.0, 2.0, 3.0)
+
+        viewer._draw_highlight(view_left=0.0, view_top=0.0)
+
+        self.assertEqual(len(rectangles), 2)
+        x1, y1, x2, y2 = rectangles[-1][0]
+        self.assertGreaterEqual(x2 - x1, 18)
+        self.assertGreaterEqual(y2 - y1, 18)
+        self.assertEqual(labels[0][1]["text"], "Current region")
 
     def test_map_opencl_failure_falls_back_to_cpu(self):
         viewer = self._viewer_without_tk()

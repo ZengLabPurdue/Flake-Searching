@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+from queue import Queue
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -22,13 +24,27 @@ from Scanning.region_classifier import (  # noqa: E402
     create_classified_image,
     draw_class_legend,
     draw_region_area_labels,
+    filter_combined_class_regions,
     load_profile_configuration,
     match_profile_class,
 )
-from Scanning.contour_finder import find_flakes  # noqa: E402
+from Scanning.contour_finder import (  # noqa: E402
+    _filter_external_candidates,
+    find_flakes,
+)
 from Scanning.contour_extractor import get_region_from_point  # noqa: E402
+from Scanning.flake_detection import (  # noqa: E402
+    Flake_Detector,
+    encode_region_mask,
+    save_database,
+)
 from Scanning.scan_profile import (  # noqa: E402
     CLASSIFICATION_RANGE,
+    FILTER_TYPE_BOUNDING_BOX,
+    FILTER_TYPE_NEURAL_NETWORK,
+    FILTER_TYPE_PERIMETER_AREA_RATIO,
+    FILTER_TYPE_SIZE,
+    PROFILE_SCHEMA,
     PROFILE_VERSION,
     ScanProfile,
 )
@@ -43,8 +59,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
         *,
         group="",
         identify=True,
-        minimum=None,
-        maximum=None,
     ):
         image = np.full((8, 8, 3), 180, dtype=np.uint8)
         mask = np.zeros((8, 8), dtype=np.uint8)
@@ -57,8 +71,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
             (3, 3),
             5,
             8,
-            minimum,
-            maximum,
             contrast=contrast,
             group=group,
             identify=identify,
@@ -69,28 +81,40 @@ class ScanProfileOptionsTests(unittest.TestCase):
     def test_current_version_round_trip_persists_classes_and_profile_options(self):
         with tempfile.TemporaryDirectory() as directory:
             profile = ScanProfile(directory)
-            profile.set_size_requirement(4, 90)
+            profile.set_filter(
+                None,
+                "Useful sizes",
+                FILTER_TYPE_SIZE,
+                True,
+                minimum_um=4,
+                maximum_um=90,
+            )
+            profile.set_filter(
+                None,
+                "Shape model",
+                FILTER_TYPE_NEURAL_NETWORK,
+                False,
+            )
             self._add_class(
                 profile,
                 "Thin blue",
                 (-20, -10, 4),
                 group="hBN",
                 identify=False,
-                minimum=8,
-                maximum=40,
             )
 
             loaded = profile.save_profile("Options")
             payload = json.loads((loaded.path / "profile.json").read_text(encoding="utf-8"))
 
             self.assertEqual(payload["version"], PROFILE_VERSION)
-            self.assertEqual(
-                payload["size_requirement"],
-                {"minimum_size_um": 4.0, "maximum_size_um": 90.0},
-            )
+            self.assertNotIn("size_requirement", payload)
+            self.assertNotIn("size_requirement", payload["classes"][0])
+            self.assertEqual(payload["filters"][0]["type"], FILTER_TYPE_SIZE)
+            self.assertEqual(payload["filters"][0]["minimum_um"], 4.0)
+            self.assertEqual(payload["filters"][1]["type"], FILTER_TYPE_NEURAL_NETWORK)
             self.assertEqual(loaded.groups, ["hBN"])
             self.assertFalse(loaded.classes[0]["identify"])
-            self.assertEqual(loaded.classes[0]["minimum_size_um"], 8.0)
+            self.assertEqual(len(loaded.filters), 2)
 
     def test_range_class_round_trip_needs_no_reference_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -99,8 +123,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
                 "Graphene range",
                 (-40, -30, -20),
                 (-10, 5, 15),
-                minimum_size_um=2,
-                maximum_size_um=80,
                 group="Graphene",
             )
 
@@ -180,6 +202,8 @@ class ScanProfileOptionsTests(unittest.TestCase):
             profile_path = Path(directory) / "profile.json"
             profile_path.write_text(
                 json.dumps({
+                    "schema": PROFILE_SCHEMA,
+                    "version": 6,
                     "classes": [{
                         "name": "Range",
                         "classification_type": "range",
@@ -214,7 +238,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
             profile_path = saved.path / "profile.json"
             payload = json.loads(profile_path.read_text(encoding="utf-8"))
             payload["version"] = 2
-            payload.pop("size_requirement", None)
+            payload.pop("filters", None)
             for item in payload["classes"]:
                 item.pop("group", None)
                 item.pop("identify", None)
@@ -267,16 +291,12 @@ class ScanProfileOptionsTests(unittest.TestCase):
                 "contrast_rgb": np.asarray((10, 10, 10), dtype=float),
                 "tolerance": 10,
                 "identify": True,
-                "minimum_size_um": None,
-                "maximum_size_um": None,
             },
             {
                 "name": "Disabled exact",
                 "contrast_rgb": np.asarray((12, 12, 12), dtype=float),
                 "tolerance": 10,
                 "identify": False,
-                "minimum_size_um": None,
-                "maximum_size_um": None,
             },
         ]
 
@@ -284,7 +304,7 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
         self.assertEqual(match[1]["name"], "Nearest identify")
 
-    def test_class_size_limits_are_applied_during_matching(self):
+    def test_obsolete_class_size_fields_do_not_affect_color_matching(self):
         classes = [
             {
                 "name": "Small",
@@ -296,9 +316,8 @@ class ScanProfileOptionsTests(unittest.TestCase):
             }
         ]
 
-        self.assertIsNone(match_profile_class(np.asarray((1, 1, 1)), classes, size_um=6))
         self.assertEqual(
-            match_profile_class(np.asarray((1, 1, 1)), classes, size_um=4)[1]["name"],
+            match_profile_class(np.asarray((1, 1, 1)), classes)[1]["name"],
             "Small",
         )
 
@@ -307,6 +326,8 @@ class ScanProfileOptionsTests(unittest.TestCase):
             profile_path = Path(directory) / "profile.json"
             profile_path.write_text(
                 json.dumps({
+                    "schema": PROFILE_SCHEMA,
+                    "version": 6,
                     "size_requirement": {
                         "minimum_size_um": 3,
                         "maximum_size_um": 30,
@@ -325,42 +346,521 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
             configuration = load_profile_configuration(profile_path)
 
-            self.assertEqual(configuration["minimum_size_um"], 3.0)
-            self.assertEqual(configuration["maximum_size_um"], 30.0)
+            self.assertEqual(configuration["filters"][0]["type"], FILTER_TYPE_SIZE)
+            self.assertEqual(configuration["filters"][0]["minimum_um"], 3.0)
+            self.assertEqual(configuration["filters"][0]["maximum_um"], 30.0)
             self.assertEqual(configuration["classes"][0]["group"], "Artifacts")
 
-    def test_region_classification_applies_profile_size(self):
-        image = np.full((12, 12, 3), 100, dtype=np.uint8)
-        image[2:10, 2:10] = 120
-        contour = np.asarray([[[2, 2]], [[9, 2]], [[9, 9]], [[2, 9]]], dtype=np.int32)
-        hierarchy = np.asarray([[-1, -1, -1, -1]], dtype=np.int32)
-        identify_class = {
+    def test_size_filter_applies_to_final_connected_region(self):
+        class_index_map = np.zeros((12, 12), dtype=np.int32)
+        class_index_map[2:8, 3:7] = 1
+        profile_class = {
             "name": "Class",
-            "contrast_rgb": np.asarray((20, 20, 20), dtype=float),
-            "tolerance": 2,
             "class_index": 0,
             "group": "Material",
             "identify": True,
-            "minimum_size_um": None,
-            "maximum_size_um": None,
             "display_color_rgb": (255, 0, 0),
         }
-        too_small = classify_contour_regions(
-            image,
-            np.zeros((12, 12), dtype=np.uint8),
-            [contour],
-            hierarchy,
-            [contour],
-            [0],
-            {0: [0]},
-            [identify_class],
-            2,
-            pixel_size_um=2,
-            minimum_size_um=20,
+        profile_filter = {
+            "id": "size",
+            "name": "Larger than this",
+            "type": FILTER_TYPE_SIZE,
+            "enabled": True,
+            "minimum_um": 7,
+            "maximum_um": None,
+        }
+
+        filtered = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=1,
+            profile_filters=[profile_filter],
         )
 
-        self.assertFalse(too_small["region_results"][0]["inside_profile_size"])
-        self.assertIsNone(too_small["region_results"][0]["matched_class"])
+        self.assertEqual(filtered["accepted_regions"], [])
+        self.assertEqual(len(filtered["rejected_regions"]), 1)
+        self.assertEqual(filtered["rejected_regions"][0]["size_um"], 6)
+        self.assertFalse(np.any(filtered["class_index_map"]))
+
+    def test_filter_crud_copy_and_extend_keep_independent_ids(self):
+        source = ScanProfile()
+        created = source.set_filter(
+            None,
+            "Size",
+            FILTER_TYPE_SIZE,
+            True,
+            minimum_um=2,
+            maximum_um=20,
+        )
+        updated = source.set_filter(
+            created["id"],
+            "Useful size",
+            FILTER_TYPE_SIZE,
+            True,
+            minimum_um=3,
+            maximum_um=30,
+        )
+        copied = source.copy_filter(updated["id"])
+
+        self.assertEqual(source.get_filter(updated["id"])["minimum_um"], 3)
+        self.assertNotEqual(copied["id"], updated["id"])
+        self.assertEqual(copied["name"], "Useful size copy")
+        source.move_filter(1, 0)
+        self.assertEqual(source.filters[0]["id"], copied["id"])
+        self.assertEqual(source.remove_filter(copied["id"])["id"], copied["id"])
+
+        destination = ScanProfile()
+        destination.extend_from_profile(source)
+        self.assertEqual(len(destination.filters), 1)
+        self.assertNotEqual(destination.filters[0]["id"], updated["id"])
+        self.assertEqual(destination.filters[0]["minimum_um"], 3)
+
+    def test_v4_generic_filters_are_not_treated_as_v7_geometry_filters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile.json"
+            profile_path.write_text(json.dumps({
+                "schema": PROFILE_SCHEMA,
+                "version": 4,
+                "filters": [{
+                    "id": "obsolete",
+                    "name": "Wrong schema",
+                    "type": FILTER_TYPE_SIZE,
+                    "enabled": True,
+                    "minimum_um": 999,
+                }],
+                "classes": [{
+                    "name": "Class",
+                    "contrast_rgb": {"red": 1, "green": 2, "blue": 3},
+                    "flood_fill": {"threshold": 4},
+                    "identify": True,
+                }],
+            }), encoding="utf-8")
+
+            configuration = load_profile_configuration(profile_path)
+
+        self.assertEqual(configuration["filters"], [])
+
+    def test_loaders_reject_invalid_versions_and_missing_filter_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "invalid-version.json"
+            for invalid_version in (PROFILE_VERSION + 1, True, float(PROFILE_VERSION), None):
+                with self.subTest(version=invalid_version):
+                    profile_path.write_text(json.dumps({
+                        "schema": PROFILE_SCHEMA,
+                        "version": invalid_version,
+                        "classes": [],
+                    }), encoding="utf-8")
+
+                    with self.assertRaisesRegex(ValueError, "Unsupported profile version"):
+                        load_profile_configuration(profile_path)
+                    with self.assertRaisesRegex(ValueError, "Unsupported profile version"):
+                        ScanProfile(directory).load_profile(profile_path)
+
+            profile = ScanProfile(directory)
+            self._add_class(profile, "Class", (1, 2, 3))
+            profile.set_filter(
+                None,
+                "Size",
+                FILTER_TYPE_SIZE,
+                True,
+                minimum_um=1,
+                maximum_um=None,
+            )
+            saved = profile.save_profile("Missing ID")
+            saved_path = saved.path / "profile.json"
+            payload = json.loads(saved_path.read_text(encoding="utf-8"))
+            payload["filters"][0].pop("id")
+            saved_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "non-empty ID"):
+                ScanProfile(directory).load_profile(saved_path)
+            with self.assertRaisesRegex(ValueError, "invalid ID"):
+                load_profile_configuration(saved_path)
+
+    def test_all_enabled_geometry_filters_are_inclusive_and_anded(self):
+        class_index_map = np.zeros((16, 18), dtype=np.int32)
+        class_index_map[2:10, 3:13] = 1
+        profile_class = {
+            "name": "Class",
+            "class_index": 0,
+            "group": "Material",
+            "identify": True,
+            "display_color_rgb": (255, 0, 0),
+        }
+        unfiltered = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=0.5,
+        )["accepted_regions"][0]
+        ratio = unfiltered["perimeter_area_ratio_per_um"]
+        filters = [
+            {
+                "id": "size",
+                "name": "Exact size",
+                "type": FILTER_TYPE_SIZE,
+                "enabled": True,
+                "minimum_um": 5,
+                "maximum_um": 5,
+            },
+            {
+                "id": "box",
+                "name": "Exact box",
+                "type": FILTER_TYPE_BOUNDING_BOX,
+                "enabled": True,
+                "minimum_width_um": 5,
+                "maximum_width_um": 5,
+                "minimum_height_um": 4,
+                "maximum_height_um": 4,
+            },
+            {
+                "id": "shape",
+                "name": "Exact shape",
+                "type": FILTER_TYPE_PERIMETER_AREA_RATIO,
+                "enabled": True,
+                "minimum_per_um": ratio,
+                "maximum_per_um": ratio,
+            },
+            {
+                "id": "disabled",
+                "name": "Disabled rejection",
+                "type": FILTER_TYPE_SIZE,
+                "enabled": False,
+                "minimum_um": 100,
+                "maximum_um": None,
+            },
+        ]
+
+        accepted = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=0.5,
+            profile_filters=filters,
+        )
+        self.assertEqual(len(accepted["accepted_regions"]), 1)
+        self.assertTrue(all(
+            item["passed"] is not False
+            for item in accepted["accepted_regions"][0]["filter_results"]
+        ))
+
+        filters[1]["minimum_width_um"] = 0
+        filters[1]["maximum_width_um"] = 4.99
+        rejected = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=0.5,
+            profile_filters=filters,
+        )
+        self.assertEqual(rejected["accepted_regions"], [])
+        self.assertEqual(rejected["rejected_regions"][0]["failed_filter_ids"], ["box"])
+        self.assertFalse(np.any(rejected["class_index_map"]))
+
+    def test_bounding_box_filter_checks_width_and_height_independently(self):
+        class_index_map = np.zeros((12, 12), dtype=np.int32)
+        class_index_map[1:9, 2:6] = 1
+        profile_class = {
+            "name": "Class",
+            "class_index": 0,
+            "group": "",
+            "identify": True,
+            "display_color_rgb": (1, 2, 3),
+        }
+        box_filter = {
+            "id": "box",
+            "name": "Wide but not tall",
+            "type": FILTER_TYPE_BOUNDING_BOX,
+            "enabled": True,
+            "minimum_width_um": 4,
+            "maximum_width_um": None,
+            "minimum_height_um": None,
+            "maximum_height_um": 7,
+        }
+
+        rejected = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=1,
+            profile_filters=[box_filter],
+        )
+        self.assertEqual(rejected["accepted_regions"], [])
+        self.assertEqual(rejected["rejected_regions"][0]["width_um"], 4)
+        self.assertEqual(rejected["rejected_regions"][0]["height_um"], 8)
+
+        box_filter["maximum_height_um"] = 8
+        accepted = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=1,
+            profile_filters=[box_filter],
+        )
+        self.assertEqual(len(accepted["accepted_regions"]), 1)
+
+    def test_perimeter_uses_component_mask_and_includes_hole_boundaries(self):
+        profile_class = {
+            "name": "Class",
+            "class_index": 0,
+            "group": "",
+            "identify": True,
+            "display_color_rgb": (1, 2, 3),
+        }
+        filled_map = np.zeros((16, 18), dtype=np.int32)
+        filled_map[2:10, 3:13] = 1
+        holed_map = filled_map.copy()
+        holed_map[5:7, 6:9] = 0
+
+        filled = combined_class_regions(
+            filled_map,
+            [profile_class],
+            pixel_size_um=0.5,
+        )[0]
+        holed = combined_class_regions(
+            holed_map,
+            [profile_class],
+            pixel_size_um=0.5,
+        )[0]
+
+        self.assertEqual(holed["width_um"], 5)
+        self.assertEqual(holed["height_um"], 4)
+        self.assertEqual(holed["size_um"], 5)
+        self.assertEqual(holed["area_um2"], holed["pixel_count"] * 0.25)
+        self.assertGreater(holed["perimeter_px"], filled["perimeter_px"])
+        self.assertAlmostEqual(
+            holed["perimeter_area_ratio_per_um"],
+            holed["perimeter_um"] / holed["area_um2"],
+        )
+
+    def test_perimeter_area_filter_distinguishes_compact_and_thin_shapes(self):
+        class_index_map = np.zeros((18, 24), dtype=np.int32)
+        class_index_map[2:7, 2:7] = 1
+        class_index_map[12, 12:21] = 1
+        profile_class = {
+            "name": "Class",
+            "class_index": 0,
+            "group": "",
+            "identify": True,
+            "display_color_rgb": (1, 2, 3),
+        }
+        regions = combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=1,
+        )
+        ratios = sorted(
+            region["perimeter_area_ratio_per_um"] for region in regions
+        )
+        threshold = sum(ratios) / 2
+        shape_filter = {
+            "id": "shape",
+            "name": "Thin shapes",
+            "type": FILTER_TYPE_PERIMETER_AREA_RATIO,
+            "enabled": True,
+            "minimum_per_um": threshold,
+            "maximum_per_um": None,
+        }
+
+        filtered = filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            pixel_size_um=1,
+            profile_filters=[shape_filter],
+        )
+
+        self.assertEqual(len(filtered["accepted_regions"]), 1)
+        self.assertEqual(len(filtered["rejected_regions"]), 1)
+        self.assertGreater(
+            filtered["accepted_regions"][0]["perimeter_area_ratio_per_um"],
+            filtered["rejected_regions"][0]["perimeter_area_ratio_per_um"],
+        )
+
+    def test_enabled_physical_filters_require_calibration_and_neural_is_explicit(self):
+        class_index_map = np.zeros((5, 5), dtype=np.int32)
+        class_index_map[1:4, 1:4] = 1
+        profile_class = {
+            "name": "Class",
+            "class_index": 0,
+            "group": "",
+            "identify": True,
+            "display_color_rgb": (1, 2, 3),
+        }
+        disabled_size = {
+            "id": "size",
+            "name": "Size",
+            "type": FILTER_TYPE_SIZE,
+            "enabled": False,
+            "minimum_um": 1,
+            "maximum_um": None,
+        }
+        self.assertEqual(len(filter_combined_class_regions(
+            class_index_map,
+            [profile_class],
+            profile_filters=[disabled_size],
+        )["accepted_regions"]), 1)
+
+        enabled_size = dict(disabled_size, enabled=True)
+        with self.assertRaisesRegex(ValueError, "calibrated pixel size"):
+            filter_combined_class_regions(
+                class_index_map,
+                [profile_class],
+                profile_filters=[enabled_size],
+            )
+
+        neural = {
+            "id": "neural",
+            "name": "Neural",
+            "type": FILTER_TYPE_NEURAL_NETWORK,
+            "enabled": True,
+        }
+        with self.assertRaisesRegex(ValueError, "not implemented"):
+            filter_combined_class_regions(
+                class_index_map,
+                [profile_class],
+                pixel_size_um=1,
+                profile_filters=[neural],
+            )
+
+    def test_detection_manifest_v2_serializes_region_statistics(self):
+        detector = Flake_Detector()
+        detection = {
+            "matched_class": "Thin",
+            "matched_group": "Graphene",
+            "bounding_box": {"x": 2, "y": 3, "width": 4, "height": 5},
+            "pixel_count": 17,
+            "size_um": 2.5,
+            "area_um2": 4.25,
+            "width_um": 2.0,
+            "height_um": 2.5,
+            "perimeter_px": 13.5,
+            "perimeter_um": 6.75,
+            "perimeter_area_ratio_per_um": 6.75 / 4.25,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory)
+            image_path = scan_path / "All Images" / "10x" / "wafer 1" / "Raw" / "img.png"
+            record = detector._create_detection_record(
+                detection,
+                "Region Detection",
+                {
+                    "path": image_path,
+                    "magnification": "10X",
+                    "pixel_size_um": 0.5,
+                },
+                (20, 30, 3),
+                scan_path,
+            )
+            bad_legacy = detector._create_detection_record(
+                (0, (1, 1, 2, 2)),
+                "Flake Detection",
+                {"path": image_path, "magnification": "10X"},
+                (20, 30, 3),
+                scan_path,
+            )
+            good_legacy = detector._create_detection_record(
+                {
+                    "class_id": 1,
+                    "bounding_box": (4, 4, 2, 2),
+                    "pixel_count": 3,
+                    "perimeter_px": 4,
+                },
+                "Flake Detection",
+                {
+                    "path": image_path,
+                    "magnification": "10X",
+                    "pixel_size_um": 0.5,
+                },
+                (20, 30, 3),
+                scan_path,
+            )
+            detector._save_detection_records(
+                scan_path,
+                "Region Detection",
+                None,
+                [record, bad_legacy, good_legacy],
+            )
+            payload = json.loads(
+                (scan_path / "flakes_found.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(payload["version"], 2)
+        self.assertTrue(payload["detections"][0]["accepted"])
+        self.assertFalse(payload["detections"][1]["accepted"])
+        self.assertTrue(payload["detections"][2]["accepted"])
+        self.assertEqual(payload["detections"][0]["statistics"]["pixel_count"], 17)
+        self.assertEqual(payload["detections"][0]["statistics"]["perimeter_px"], 13.5)
+        self.assertAlmostEqual(
+            payload["detections"][0]["statistics"][
+                "perimeter_area_ratio_per_um"
+            ],
+            6.75 / 4.25,
+        )
+        self.assertEqual(payload["detections"][2]["statistics"], {
+            "pixel_count": 3,
+            "size_um": 1.0,
+            "area_um2": 0.75,
+            "width_um": 1.0,
+            "height_um": 1.0,
+            "perimeter_px": 4.0,
+            "perimeter_um": 2.0,
+            "perimeter_area_ratio_per_um": 2.0 / 0.75,
+        })
+
+    def test_legacy_detection_saves_clean_processed_tile_and_annotated_preview(self):
+        detector = Flake_Detector()
+        source_bgr = np.zeros((8, 9, 3), dtype=np.uint8)
+        source_bgr[:, :] = (11, 37, 83)
+        annotated_rgb = cv2.cvtColor(source_bgr, cv2.COLOR_BGR2RGB)
+        annotated_rgb = annotated_rgb.copy()
+        annotated_rgb[1:4, 2:6] = (255, 0, 0)
+        saved_images = []
+
+        class FrameProcessor:
+            @staticmethod
+            def save_image(image, *, save_dir, filename, **_kwargs):
+                saved_images.append(
+                    (Path(save_dir) / filename, np.asarray(image).copy())
+                )
+
+        detector.flake_identifier.identify_flakes_flake_model = (
+            lambda _image: (annotated_rgb, [(1, (2, 1, 4, 3))], True)
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            scan_path = Path(directory) / "scan"
+            raw_dir = scan_path / "All Images" / "10x" / "wafer 1" / "Raw"
+            raw_dir.mkdir(parents=True)
+            source_path = raw_dir / "tile.png"
+            cv2.imwrite(str(source_path), source_bgr)
+            image_queue = Queue()
+            image_queue.put({"path": source_path, "magnification": "10X"})
+            image_queue.put(None)
+
+            with (
+                patch(
+                    "Scanning.flake_detection.image_metadata.is_vignette_corrected",
+                    return_value=False,
+                ),
+                patch(
+                    "Scanning.flake_detection.image_metadata.read_png_metadata",
+                    return_value={},
+                ),
+            ):
+                detector.flake_detection(
+                    image_queue,
+                    FrameProcessor(),
+                    detection_model="Flake Detection",
+                    scan_path=scan_path,
+                )
+
+        self.assertEqual(len(saved_images), 2)
+        processed_path, processed_image = saved_images[0]
+        preview_path, preview_image = saved_images[1]
+        self.assertEqual(processed_path.parent.name, "Processed")
+        self.assertTrue(np.array_equal(processed_image, source_bgr))
+        self.assertEqual(preview_path.parent.parent.name, "Flakes Found")
+        self.assertTrue(
+            np.array_equal(
+                preview_image,
+                cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR),
+            )
+        )
 
     def test_region_pipeline_classifies_with_a_contrast_range(self):
         image = np.full((12, 12, 3), 100, dtype=np.uint8)
@@ -377,8 +877,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
             "class_index": 0,
             "group": "",
             "identify": True,
-            "minimum_size_um": None,
-            "maximum_size_um": None,
             "display_color_rgb": (255, 0, 0),
         }
 
@@ -484,8 +982,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
                 "class_index": index,
                 "group": "",
                 "identify": True,
-                "minimum_size_um": None,
-                "maximum_size_um": None,
                 "display_color_rgb": color,
             }
 
@@ -570,8 +1066,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
             (40, 40),
             255,
             8,
-            None,
-            None,
             contrast=(110, 110, 110),
         ))
 
@@ -627,6 +1121,73 @@ class ScanProfileOptionsTests(unittest.TestCase):
             area_details["combined_region_results"][0]["area_um2"],
             0,
         )
+
+    def test_find_flakes_rebuilds_render_map_from_accepted_components_only(self):
+        image = np.full((100, 100, 3), 180, dtype=np.uint8)
+        cv2.rectangle(image, (20, 20), (79, 79), (70, 70, 70), -1)
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        mask[20:80, 20:80] = 255
+        profile = ScanProfile()
+        profile.classes.append(profile._make_class(
+            "Preview class",
+            Path("preview.png"),
+            image,
+            mask,
+            (40, 40),
+            255,
+            8,
+            contrast=(110, 110, 110),
+        ))
+        profile.set_filter(
+            None,
+            "Reject this region",
+            FILTER_TYPE_SIZE,
+            True,
+            minimum_um=1000,
+            maximum_um=None,
+        )
+
+        classified, _, details = find_flakes(
+            image,
+            area_threshold=10,
+            return_details=True,
+            profile_configuration=profile.matching_configuration(),
+            pixel_size_um=0.5,
+            color_seed=0,
+            draw_legend=False,
+        )
+
+        self.assertEqual(details["combined_region_results"], [])
+        self.assertEqual(len(details["rejected_combined_region_results"]), 1)
+        self.assertEqual(len(details["all_combined_region_results"]), 1)
+        self.assertFalse(np.any(details["class_index_map"]))
+        self.assertFalse(np.any(details["matched_region_mask"]))
+        self.assertEqual(details["unfiltered_external_mask"][50, 50], 255)
+        self.assertEqual(details["external_mask"][50, 50], 0)
+        self.assertTrue(np.array_equal(classified[50, 50], (0, 0, 0)))
+        self.assertTrue(np.array_equal(
+            classified,
+            details["classified_image_without_legend"],
+        ))
+
+    def test_rejected_partial_class_removes_its_whole_white_candidate(self):
+        external_mask = np.zeros((12, 18), dtype=np.uint8)
+        external_mask[1:10, 1:8] = 255
+        external_mask[2:9, 11:17] = 255
+        unfiltered_class_map = np.zeros_like(external_mask, dtype=np.int32)
+        unfiltered_class_map[4:6, 3:5] = 1
+        unfiltered_class_map[4:7, 13:15] = 1
+        filtered_class_map = np.zeros_like(unfiltered_class_map)
+        filtered_class_map[4:7, 13:15] = 1
+
+        filtered_external = _filter_external_candidates(
+            external_mask,
+            unfiltered_class_map,
+            filtered_class_map,
+        )
+
+        self.assertFalse(np.any(filtered_external[1:10, 1:8]))
+        self.assertTrue(np.all(filtered_external[2:9, 11:17] == 255))
 
     def test_class_legend_supports_each_image_corner(self):
         image = np.zeros((200, 240, 3), dtype=np.uint8)
@@ -735,8 +1296,6 @@ class ScanProfileOptionsTests(unittest.TestCase):
             "class_index": 0,
             "group": "",
             "identify": True,
-            "minimum_size_um": None,
-            "maximum_size_um": None,
             "display_color_rgb": (255, 0, 0),
         }
         result = classify_contour_regions(
@@ -761,6 +1320,81 @@ class ScanProfileOptionsTests(unittest.TestCase):
             int(np.count_nonzero(region["instance_mask"])),
             region["pixel_count"],
         )
+
+    def test_database_export_copies_selected_images_and_writes_json_last(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scan_path = root / "100x Scan (2026-07-31) (12-00-00)"
+            image_20x = scan_path / "All Images" / "20x" / "group.png"
+            image_100x = scan_path / "All Images" / "100x" / "group.png"
+            image_20x.parent.mkdir(parents=True)
+            image_100x.parent.mkdir(parents=True)
+            image_20x.write_bytes(b"20x-image")
+            image_100x.write_bytes(b"100x-image")
+            (scan_path / "flakes_found.json").write_text(
+                json.dumps({
+                    "schema": "flake-search.100x-scan",
+                    "version": 2,
+                    "material": "Graphene",
+                    "substrate_thickness": "285nm SiO2",
+                }),
+                encoding="utf-8",
+            )
+            record = {
+                "classification": "Thin",
+                "classification_group": "Graphene",
+                "statistics": {"area_um2": 12.5},
+                "location": {"stage_position_um": {"x": 1, "y": 2}},
+                "image_20x": "All Images/20x/group.png",
+                "image_100x": "All Images/100x/group.png",
+            }
+            destination = root / "to_read"
+
+            exported = save_database(
+                scan_path,
+                record,
+                destination=destination,
+                flake_id="selected_0001",
+            )
+            payload = json.loads(exported["json"].read_text(encoding="utf-8"))
+
+            self.assertEqual(exported["images"]["20X"].read_bytes(), b"20x-image")
+            self.assertEqual(exported["images"]["100X"].read_bytes(), b"100x-image")
+            self.assertTrue(image_20x.is_file())
+            self.assertTrue(image_100x.is_file())
+            self.assertEqual(payload["schema"], "flake-search.database-import")
+            self.assertEqual(payload["flake_id"], "selected_0001")
+            self.assertEqual(payload["metadata"]["material"], "Graphene")
+            self.assertEqual(payload["metadata"]["classification"], "Thin")
+            self.assertEqual(Path(payload["images"]["20X"]).parent, destination)
+            self.assertFalse(any(destination.glob("*.part")))
+
+    def test_database_export_rejects_images_outside_the_scan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scan_path = root / "scan"
+            scan_path.mkdir()
+            outside = root / "outside.png"
+            outside.write_bytes(b"outside")
+            record = {
+                "image_20x": str(outside),
+                "image_100x": str(outside),
+            }
+            with self.assertRaisesRegex(ValueError, "outside"):
+                save_database(scan_path, record, destination=root / "to_read")
+
+    def test_region_mask_encoding_preserves_exact_shape(self):
+        mask = np.zeros((4, 5), dtype=np.uint8)
+        mask[0, 1:4] = 255
+        mask[2:4, 2] = 255
+
+        encoded = encode_region_mask(mask)
+        restored = np.zeros(mask.size, dtype=np.uint8)
+        for offset in range(0, len(encoded["runs"]), 2):
+            start, length = encoded["runs"][offset:offset + 2]
+            restored[start:start + length] = 255
+
+        self.assertTrue(np.array_equal(restored.reshape(mask.shape), mask))
 
 
 if __name__ == "__main__":

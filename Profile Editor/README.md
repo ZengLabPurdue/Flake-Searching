@@ -21,5 +21,18 @@ Each class can use either:
   values for red, green, and blue. A region matches only when all three
   channels are inside their ranges; no reference image is required.
 
-Set the preview magnification and resolution in the toolbar before running a
-profile preview when the profile uses physical size limits.
+Use **Preview > Magnification** and **Preview > Resolution** to select the
+calibration used for physical measurements and geometry filters.
+
+Profiles can contain any number of optional filters. Size, bounding-box width
+and height, and perimeter-to-area filters use inclusive bounds and can be
+enabled or disabled independently. The neural-network flake filter is shown as
+a disabled placeholder until that model is implemented.
+
+After running a preview, use **Previous** and **Next** to inspect each accepted
+region. Its class, group, area, size, bounding-box dimensions, perimeter, and
+perimeter-to-area ratio are shown in the panel rather than written onto the
+preview image. The full processed image remains visible while the current
+region alone retains its class color. Enable **Display everything** to show all
+classified regions, and use **Show class legend** to add or remove the legend
+without rerunning the profile.

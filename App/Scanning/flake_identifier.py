@@ -199,9 +199,6 @@ class Flake_Identifier():
             if new_x2 <= new_x or new_y2 <= new_y:
                 continue
             
-            contour_mask = np.zeros(image.shape[:2], dtype=np.uint8)
-            cv2.drawContours(contour_mask, [c], -1, 255, -1)
-
             crop = image[new_y:new_y2, new_x:new_x2]
 
             h_crop, w_crop = crop.shape[:2]
@@ -255,10 +252,19 @@ class Flake_Identifier():
                           color,
                           2)
         
-            flakes.append((
-                class_id,
-                (new_x, new_y, new_x2 - new_x, new_y2 - new_y),
-            ))
+            flakes.append({
+                "class_id": class_id,
+                # Report the actual region bounds. The expanded crop above is
+                # only classifier context and must not inflate measurements.
+                "bounding_box": {
+                    "x": x,
+                    "y": y,
+                    "width": w,
+                    "height": h,
+                },
+                "pixel_count": int(cv2.countNonZero(mask)),
+                "perimeter_px": float(cv2.arcLength(c, True)),
+            })
         
         if output:
             print(f"Time: {time.time() - start_time:.2f}s")
@@ -281,7 +287,7 @@ class Flake_Identifier():
         pixel_size_um=None,
         legend_position=contour_finder.DEFAULT_LEGEND_POSITION,
         draw_legend=True,
-        draw_region_areas=True,
+        draw_region_areas=False,
     ):
         if profile_path is None:
             raise ValueError("A scan profile is required for region detection.")

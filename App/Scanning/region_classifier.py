@@ -12,9 +12,36 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_CONTRAST_MATCH_THRESHOLD = 3
 DEFAULT_REGION_FLOOD_FILL_THRESHOLD = 10
+PROFILE_SCHEMA = "flake-search.scan-search-profile"
+PROFILE_VERSION = 7
+SUPPORTED_PROFILE_VERSIONS = frozenset(range(1, PROFILE_VERSION + 1))
 CLASSIFICATION_SAMPLE = "sample"
 CLASSIFICATION_RANGE = "range"
 CLASSIFICATION_TYPES = {CLASSIFICATION_SAMPLE, CLASSIFICATION_RANGE}
+FILTER_TYPE_SIZE = "size"
+FILTER_TYPE_BOUNDING_BOX = "bounding_box"
+FILTER_TYPE_PERIMETER_AREA_RATIO = "perimeter_area_ratio"
+FILTER_TYPE_NEURAL_NETWORK = "neural_network"
+FILTER_TYPES = {
+    FILTER_TYPE_SIZE,
+    FILTER_TYPE_BOUNDING_BOX,
+    FILTER_TYPE_PERIMETER_AREA_RATIO,
+    FILTER_TYPE_NEURAL_NETWORK,
+}
+FILTER_BOUND_KEYS = {
+    FILTER_TYPE_SIZE: ("minimum_um", "maximum_um"),
+    FILTER_TYPE_BOUNDING_BOX: (
+        "minimum_width_um",
+        "maximum_width_um",
+        "minimum_height_um",
+        "maximum_height_um",
+    ),
+    FILTER_TYPE_PERIMETER_AREA_RATIO: (
+        "minimum_per_um",
+        "maximum_per_um",
+    ),
+    FILTER_TYPE_NEURAL_NETWORK: (),
+}
 CLASS_COLOR_SATURATION = 0.58
 CLASS_COLOR_LIGHTNESS = 0.72
 LEGEND_TOP_LEFT = "top_left"
@@ -65,11 +92,11 @@ def _read_rgb_triplet(value, field_name, class_name):
     return np.asarray(value, dtype=np.float64)
 
 
-def _read_size_requirement(value, label):
+def _read_legacy_size_requirement(value):
     if value is None:
         return None, None
     if not isinstance(value, dict):
-        raise ValueError(f"{label} size requirement must be an object or null.")
+        raise ValueError("Profile size requirement must be an object or null.")
     result = []
     for key in ("minimum_size_um", "maximum_size_um"):
         size = value.get(key)
@@ -79,16 +106,107 @@ def _read_size_requirement(value, label):
             or not np.isfinite(size)
             or size <= 0
         ):
-            raise ValueError(f"{label} has an invalid {key} value.")
+            raise ValueError(f"Profile has an invalid {key} value.")
         result.append(None if size is None else float(size))
     minimum, maximum = result
     if minimum is not None and maximum is not None and minimum > maximum:
-        raise ValueError(f"{label} minimum size cannot exceed its maximum size.")
+        raise ValueError("Profile minimum size cannot exceed its maximum size.")
     return minimum, maximum
 
 
+def _filter_bound_pairs(filter_type):
+    if filter_type == FILTER_TYPE_SIZE:
+        return (("minimum_um", "maximum_um"),)
+    if filter_type == FILTER_TYPE_BOUNDING_BOX:
+        return (
+            ("minimum_width_um", "maximum_width_um"),
+            ("minimum_height_um", "maximum_height_um"),
+        )
+    if filter_type == FILTER_TYPE_PERIMETER_AREA_RATIO:
+        return (("minimum_per_um", "maximum_per_um"),)
+    return ()
+
+
+def normalize_profile_filters(filters):
+    """Validate and return canonical copies of profile-wide filters."""
+    if filters is None:
+        return []
+    if not isinstance(filters, list):
+        raise ValueError("Profile filters must be an array.")
+    normalized = []
+    seen_ids = set()
+    seen_names = set()
+    for index, profile_filter in enumerate(filters, start=1):
+        if not isinstance(profile_filter, dict):
+            raise ValueError(f"Profile filter {index} must be an object.")
+        filter_id = profile_filter.get("id")
+        name = profile_filter.get("name")
+        filter_type = profile_filter.get("type")
+        enabled = profile_filter.get("enabled")
+        if not isinstance(filter_id, str) or not filter_id.strip():
+            raise ValueError(f"Profile filter {index} has an invalid ID.")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Profile filter {index} has an invalid name.")
+        if filter_type not in FILTER_TYPES:
+            raise ValueError(f"Profile filter {name!r} has an invalid type.")
+        if not isinstance(enabled, bool):
+            raise ValueError(f"Profile filter {name!r} has an invalid enabled flag.")
+        allowed_keys = {
+            "id",
+            "name",
+            "type",
+            "enabled",
+            *FILTER_BOUND_KEYS[filter_type],
+        }
+        unknown_keys = set(profile_filter) - allowed_keys
+        if unknown_keys:
+            labels = ", ".join(sorted(unknown_keys))
+            raise ValueError(
+                f"Profile filter {name!r} has unsupported setting(s): {labels}."
+            )
+        if filter_id in seen_ids:
+            raise ValueError("Profile filter IDs must be unique.")
+        folded_name = name.strip().casefold()
+        if folded_name in seen_names:
+            raise ValueError("Profile filter names must be unique.")
+        seen_ids.add(filter_id)
+        seen_names.add(folded_name)
+        result = {
+            "id": filter_id,
+            "name": name.strip(),
+            "type": filter_type,
+            "enabled": enabled,
+        }
+        bound_keys = FILTER_BOUND_KEYS[filter_type]
+        for key in bound_keys:
+            value = profile_filter.get(key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not np.isfinite(value)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"Profile filter {name!r} has an invalid {key} value."
+                )
+            result[key] = None if value is None else float(value)
+        for minimum_key, maximum_key in _filter_bound_pairs(filter_type):
+            minimum = result[minimum_key]
+            maximum = result[maximum_key]
+            if minimum is not None and maximum is not None and minimum > maximum:
+                raise ValueError(
+                    f"Profile filter {name!r} minimum cannot exceed its maximum."
+                )
+        if enabled and bound_keys and all(result[key] is None for key in bound_keys):
+            raise ValueError(
+                f"Enabled profile filter {name!r} needs at least one limit."
+            )
+        normalized.append(result)
+    return normalized
+
+
 def load_profile_configuration(profile_path, contrast_threshold=None):
-    """Load matching classes and profile-wide region requirements."""
+    """Load color classes and v7 profile-wide geometry filters."""
     profile_path = Path(profile_path)
     if profile_path.is_dir():
         profile_path = profile_path / "profile.json"
@@ -107,15 +225,38 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Could not read profile: {profile_path}") from exc
 
-    if not isinstance(profile_data, dict):
-        raise ValueError(f"Profile has invalid data: {profile_path}")
+    if (
+        not isinstance(profile_data, dict)
+        or profile_data.get("schema") != PROFILE_SCHEMA
+    ):
+        raise ValueError(f"File is not a scan search profile: {profile_path}")
+    profile_version = profile_data.get("version")
+    if (
+        type(profile_version) is not int
+        or profile_version not in SUPPORTED_PROFILE_VERSIONS
+    ):
+        raise ValueError(f"Unsupported profile version: {profile_version!r}.")
     saved_classes = profile_data.get("classes")
     if not isinstance(saved_classes, list):
         raise ValueError(f"Profile has an invalid class list: {profile_path}")
-    profile_minimum, profile_maximum = _read_size_requirement(
-        profile_data.get("size_requirement"),
-        "Profile",
-    )
+    if profile_version == PROFILE_VERSION:
+        profile_filters = normalize_profile_filters(profile_data.get("filters", []))
+    else:
+        # Do not interpret the unrelated generic ``filters`` payload used by
+        # some version-4 profiles. Only the old top-level size range migrates.
+        legacy_minimum, legacy_maximum = _read_legacy_size_requirement(
+            profile_data.get("size_requirement")
+        )
+        profile_filters = []
+        if legacy_minimum is not None or legacy_maximum is not None:
+            profile_filters.append({
+                "id": "legacy-profile-size",
+                "name": "Legacy size",
+                "type": FILTER_TYPE_SIZE,
+                "enabled": True,
+                "minimum_um": legacy_minimum,
+                "maximum_um": legacy_maximum,
+            })
     profile_classes = []
     for saved_class in saved_classes:
         if not isinstance(saved_class, dict):
@@ -204,17 +345,11 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
             group = ""
         if not isinstance(group, str):
             raise ValueError(f"Profile class {name!r} has an invalid group.")
-        minimum, maximum = _read_size_requirement(
-            saved_class.get("size_requirement"),
-            f"Profile class {name!r}",
-        )
         configured_class = {
             "name": name,
             "class_index": len(profile_classes),
             "group": group.strip(),
             "identify": identify,
-            "minimum_size_um": minimum,
-            "maximum_size_um": maximum,
         }
         configured_class.update(color_configuration)
         profile_classes.append(configured_class)
@@ -223,11 +358,7 @@ def load_profile_configuration(profile_path, contrast_threshold=None):
     if len(names) != len(set(names)):
         raise ValueError("Profile class names must be unique.")
 
-    return {
-        "classes": profile_classes,
-        "minimum_size_um": profile_minimum,
-        "maximum_size_um": profile_maximum,
-    }
+    return {"classes": profile_classes, "filters": profile_filters}
 
 
 def load_profile_classes(profile_path, contrast_threshold=None):
@@ -235,27 +366,11 @@ def load_profile_classes(profile_path, contrast_threshold=None):
     return load_profile_configuration(profile_path, contrast_threshold)["classes"]
 
 
-def _size_matches(size_um, minimum, maximum):
-    if size_um is None:
-        return True
-    if minimum is not None and size_um < minimum:
-        return False
-    if maximum is not None and size_um > maximum:
-        return False
-    return True
-
-
-def match_profile_class(contrast_rgb, profile_classes, size_um=None):
-    """Return the nearest enabled sample or range class inside all limits."""
+def match_profile_class(contrast_rgb, profile_classes):
+    """Return the nearest enabled sample or inclusive contrast-range class."""
     matches = []
     for profile_class in profile_classes:
         if not profile_class.get("identify", True):
-            continue
-        if not _size_matches(
-            size_um,
-            profile_class.get("minimum_size_um"),
-            profile_class.get("maximum_size_um"),
-        ):
             continue
         classification_type = profile_class.get(
             "classification_type",
@@ -360,12 +475,7 @@ def _flood_fill_region(image_rgb, seed_point, allowed_mask, threshold):
     return flood_mask[1:-1, 1:-1] == 255
 
 
-def _validate_classification_size_inputs(
-    profile_classes,
-    pixel_size_um,
-    minimum_size_um,
-    maximum_size_um,
-):
+def _validate_classification_inputs(pixel_size_um, profile_filters):
     if pixel_size_um is not None and (
         isinstance(pixel_size_um, bool)
         or not isinstance(pixel_size_um, (int, float))
@@ -373,17 +483,19 @@ def _validate_classification_size_inputs(
         or pixel_size_um <= 0
     ):
         raise ValueError("Pixel size must be a positive number of micrometers.")
-    class_size_required = any(
-        item.get("minimum_size_um") is not None
-        or item.get("maximum_size_um") is not None
-        for item in profile_classes
-    )
-    if (
-        minimum_size_um is not None
-        or maximum_size_um is not None
-        or class_size_required
-    ) and pixel_size_um is None:
-        raise ValueError("A calibrated pixel size is required by the profile size limits.")
+    filters = normalize_profile_filters(profile_filters)
+    for profile_filter in filters:
+        if not profile_filter["enabled"]:
+            continue
+        if profile_filter["type"] == FILTER_TYPE_NEURAL_NETWORK:
+            raise ValueError(
+                "The neural network flake filter is not implemented yet."
+            )
+        if pixel_size_um is None:
+            raise ValueError(
+                "A calibrated pixel size is required by enabled profile filters."
+            )
+    return filters
 
 
 def _prepare_classification_workspace(
@@ -620,8 +732,6 @@ def _component_color_measurement(color_measurements, component_label):
 def _measure_contour_geometry(
     component,
     pixel_size_um,
-    minimum_size_um,
-    maximum_size_um,
 ):
     bounding_box = component["bounding_box"]
     pixel_count = component["pixel_count"]
@@ -634,15 +744,20 @@ def _measure_contour_geometry(
         "pixel_count": pixel_count,
         "bounding_box": bounding_box,
         "size_um": size_um,
+        "width_um": (
+            bounding_box["width"] * pixel_size_um
+            if pixel_size_um is not None
+            else None
+        ),
+        "height_um": (
+            bounding_box["height"] * pixel_size_um
+            if pixel_size_um is not None
+            else None
+        ),
         "area_um2": (
             pixel_count * pixel_size_um * pixel_size_um
             if pixel_size_um is not None
             else None
-        ),
-        "inside_profile_size": _size_matches(
-            size_um,
-            minimum_size_um,
-            maximum_size_um,
         ),
     }
 
@@ -652,8 +767,6 @@ def _measure_region_geometry(
     x1,
     y1,
     pixel_size_um,
-    minimum_size_um,
-    maximum_size_um,
 ):
     pixel_count = int(np.count_nonzero(region_mask))
     if pixel_count == 0:
@@ -674,15 +787,20 @@ def _measure_region_geometry(
         "pixel_count": pixel_count,
         "bounding_box": bounding_box,
         "size_um": size_um,
+        "width_um": (
+            bounding_box["width"] * pixel_size_um
+            if pixel_size_um is not None
+            else None
+        ),
+        "height_um": (
+            bounding_box["height"] * pixel_size_um
+            if pixel_size_um is not None
+            else None
+        ),
         "area_um2": (
             pixel_count * pixel_size_um * pixel_size_um
             if pixel_size_um is not None
             else None
-        ),
-        "inside_profile_size": _size_matches(
-            size_um,
-            minimum_size_um,
-            maximum_size_um,
         ),
     }
 
@@ -700,12 +818,8 @@ def _match_region(
             match_profile_class,
             color_measurement["contrast"],
             profile_classes,
-            geometry["size_um"],
         )
-        if (
-            profile_classes
-            and geometry["inside_profile_size"]
-        )
+        if profile_classes
         else None
     )
 
@@ -792,8 +906,17 @@ def _make_region_result(
             else None
         ),
         "size_um": float(size_um) if size_um is not None else None,
+        "width_um": (
+            float(geometry["width_um"])
+            if geometry["width_um"] is not None
+            else None
+        ),
+        "height_um": (
+            float(geometry["height_um"])
+            if geometry["height_um"] is not None
+            else None
+        ),
         "area_um2": float(area_um2) if area_um2 is not None else None,
-        "inside_profile_size": geometry["inside_profile_size"],
         "matched_color_rgb": (
             matched_class["display_color_rgb"] if matched_class else None
         ),
@@ -837,18 +960,15 @@ def classify_contour_regions(
     flood_fill_threshold,
     benchmark_stats=None,
     pixel_size_um=None,
-    minimum_size_um=None,
-    maximum_size_um=None,
+    profile_filters=None,
 ):
     """Classify contour interiors first, then flood-fill identified regions."""
     _timed_call(
         benchmark_stats,
         "validate_classification_inputs",
-        _validate_classification_size_inputs,
-        profile_classes,
+        _validate_classification_inputs,
         pixel_size_um,
-        minimum_size_um,
-        maximum_size_um,
+        profile_filters,
     )
     workspace = _timed_call(
         benchmark_stats,
@@ -912,8 +1032,6 @@ def classify_contour_regions(
                 _measure_contour_geometry,
                 component,
                 pixel_size_um,
-                minimum_size_um,
-                maximum_size_um,
             )
             depth_difference = (
                 component["raw_depth"] - external_region["outer_depth"]
@@ -959,16 +1077,8 @@ def classify_contour_regions(
                     x1,
                     y1,
                     pixel_size_um,
-                    minimum_size_um,
-                    maximum_size_um,
                 )
                 if flooded_geometry is not None:
-                    # Matching size is deliberately based on the full contour
-                    # interior. The flooded mask only refines output geometry.
-                    flooded_geometry["size_um"] = contour_geometry["size_um"]
-                    flooded_geometry["inside_profile_size"] = contour_geometry[
-                        "inside_profile_size"
-                    ]
                     result_geometry = flooded_geometry
                     flood_filled = True
             if region_mask is not None:
@@ -1042,9 +1152,85 @@ def create_classified_image(image_shape, external_mask, class_index_map, profile
     return image
 
 
-def combined_class_regions(class_index_map, profile_classes, pixel_size_um=None):
-    """Return one result for each connected region in the final class map."""
-    combined_regions = []
+def _component_perimeter_px(instance_mask):
+    contours, _hierarchy = cv2.findContours(
+        instance_mask.copy(),
+        cv2.RETR_TREE,
+        cv2.CHAIN_APPROX_NONE,
+    )
+    return float(sum(cv2.arcLength(contour, True) for contour in contours))
+
+
+def _inside_inclusive_range(value, minimum, maximum):
+    if value is None:
+        return False
+    if minimum is not None and value < minimum:
+        return False
+    if maximum is not None and value > maximum:
+        return False
+    return True
+
+
+def _region_passes_filters(region, profile_filters):
+    filter_results = []
+    passed_all = True
+    for profile_filter in profile_filters:
+        enabled = profile_filter["enabled"]
+        filter_type = profile_filter["type"]
+        passed = None
+        if enabled:
+            if filter_type == FILTER_TYPE_NEURAL_NETWORK:
+                raise ValueError(
+                    "The neural network flake filter is not implemented yet."
+                )
+            if filter_type == FILTER_TYPE_SIZE:
+                passed = _inside_inclusive_range(
+                    region["size_um"],
+                    profile_filter["minimum_um"],
+                    profile_filter["maximum_um"],
+                )
+            elif filter_type == FILTER_TYPE_BOUNDING_BOX:
+                passed = (
+                    _inside_inclusive_range(
+                        region["width_um"],
+                        profile_filter["minimum_width_um"],
+                        profile_filter["maximum_width_um"],
+                    )
+                    and _inside_inclusive_range(
+                        region["height_um"],
+                        profile_filter["minimum_height_um"],
+                        profile_filter["maximum_height_um"],
+                    )
+                )
+            elif filter_type == FILTER_TYPE_PERIMETER_AREA_RATIO:
+                passed = _inside_inclusive_range(
+                    region["perimeter_area_ratio_per_um"],
+                    profile_filter["minimum_per_um"],
+                    profile_filter["maximum_per_um"],
+                )
+            passed_all = passed_all and bool(passed)
+        filter_results.append({
+            "id": profile_filter["id"],
+            "name": profile_filter["name"],
+            "type": filter_type,
+            "enabled": enabled,
+            "passed": passed,
+        })
+    return passed_all, filter_results
+
+
+def filter_combined_class_regions(
+    class_index_map,
+    profile_classes,
+    pixel_size_um=None,
+    profile_filters=None,
+):
+    """Measure, filter, and rebuild final connected class components."""
+    filters = _validate_classification_inputs(pixel_size_um, profile_filters)
+    accepted_regions = []
+    rejected_regions = []
+    all_regions = []
+    filtered_class_index_map = np.zeros_like(class_index_map)
     for profile_class in profile_classes:
         if not profile_class.get("identify", True):
             continue
@@ -1071,7 +1257,20 @@ def combined_class_regions(class_index_map, profile_classes, pixel_size_um=None)
                 255,
                 0,
             ).astype(np.uint8)
-            combined_regions.append({
+            perimeter_px = _component_perimeter_px(instance_mask)
+            width_um = width * pixel_size_um if pixel_size_um is not None else None
+            height_um = height * pixel_size_um if pixel_size_um is not None else None
+            area_um2 = (
+                pixel_count * pixel_size_um * pixel_size_um
+                if pixel_size_um is not None
+                else None
+            )
+            perimeter_um = (
+                perimeter_px * pixel_size_um
+                if pixel_size_um is not None
+                else None
+            )
+            region = {
                 "region_type": "combined",
                 "matched_class": profile_class["name"],
                 "matched_group": profile_class.get("group") or None,
@@ -1082,13 +1281,18 @@ def combined_class_regions(class_index_map, profile_classes, pixel_size_um=None)
                 "matched_color_rgb": profile_class["display_color_rgb"],
                 "pixel_count": pixel_count,
                 "size_um": (
-                    max(width, height) * pixel_size_um
-                    if pixel_size_um is not None
+                    max(width_um, height_um)
+                    if width_um is not None and height_um is not None
                     else None
                 ),
-                "area_um2": (
-                    pixel_count * pixel_size_um * pixel_size_um
-                    if pixel_size_um is not None
+                "area_um2": area_um2,
+                "width_um": width_um,
+                "height_um": height_um,
+                "perimeter_px": perimeter_px,
+                "perimeter_um": perimeter_um,
+                "perimeter_area_ratio_per_um": (
+                    perimeter_um / area_um2
+                    if perimeter_um is not None and area_um2
                     else None
                 ),
                 "bounding_box": {
@@ -1098,8 +1302,48 @@ def combined_class_regions(class_index_map, profile_classes, pixel_size_um=None)
                     "height": height,
                 },
                 "instance_mask": instance_mask,
-            })
-    return combined_regions
+            }
+            accepted, filter_results = _region_passes_filters(region, filters)
+            region["accepted"] = accepted
+            region["filter_results"] = filter_results
+            region["failed_filter_ids"] = [
+                item["id"]
+                for item in filter_results
+                if item["enabled"] and not item["passed"]
+            ]
+            all_regions.append(region)
+            if accepted:
+                accepted_regions.append(region)
+                local_component = (
+                    component_labels[y:y + height, x:x + width]
+                    == component_label
+                )
+                filtered_class_index_map[y:y + height, x:x + width][
+                    local_component
+                ] = class_value
+            else:
+                rejected_regions.append(region)
+    return {
+        "class_index_map": filtered_class_index_map,
+        "accepted_regions": accepted_regions,
+        "rejected_regions": rejected_regions,
+        "all_regions": all_regions,
+    }
+
+
+def combined_class_regions(
+    class_index_map,
+    profile_classes,
+    pixel_size_um=None,
+    profile_filters=None,
+):
+    """Return accepted connected regions while retaining the former API."""
+    return filter_combined_class_regions(
+        class_index_map,
+        profile_classes,
+        pixel_size_um,
+        profile_filters,
+    )["accepted_regions"]
 
 
 def _load_class_legend_font(font_size):

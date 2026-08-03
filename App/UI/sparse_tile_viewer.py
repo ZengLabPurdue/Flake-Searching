@@ -65,6 +65,7 @@ class SparseTileViewer:
         self.maximum_scale = 1.0
         self.title = ""
         self.nearest = False
+        self.highlight_bounds = None
 
         self._drag_position = None
         self._render_job = None
@@ -138,6 +139,7 @@ class SparseTileViewer:
             return
         self._invalidate_work()
         self.records = []
+        self.highlight_bounds = None
         self._overview_record = None
         self._buckets = {}
         self._clear_render_buffer()
@@ -178,6 +180,7 @@ class SparseTileViewer:
 
         generation = self._invalidate_work()
         self.records = []
+        self.highlight_bounds = None
         self._overview_record = None
         self._buckets = {}
         self.title = title
@@ -217,6 +220,7 @@ class SparseTileViewer:
             return False
 
         self._invalidate_work()
+        self.highlight_bounds = None
         self.records = [{
             "path": image_path,
             "x": 0.0,
@@ -244,6 +248,70 @@ class SparseTileViewer:
         self._clear_cache()
         self._apply_view_state(view_state)
         return True
+
+    def load_rgb_image(
+        self,
+        image_rgb,
+        title="",
+        nearest=True,
+        view_state=None,
+    ):
+        """Load an in-memory RGB image without creating a temporary file."""
+        pixels = np.asarray(image_rgb)
+        if pixels.ndim != 3 or pixels.shape[2] != 3 or not pixels.size:
+            self.clear("Could not display the selected region")
+            return False
+        pixels = np.ascontiguousarray(np.clip(pixels, 0, 255).astype(np.uint8))
+        source_image = Image.fromarray(pixels, mode="RGB")
+        width, height = source_image.size
+
+        generation = self._invalidate_work()
+        self.highlight_bounds = None
+        self.records = [{
+            "path": Path(f"memory-region-{generation}.png"),
+            "source_image": source_image,
+            "cache_key": f"memory-region-{generation}",
+            "x": 0.0,
+            "y": 0.0,
+            "width": float(width),
+            "height": float(height),
+            "pixel_width": width,
+            "pixel_height": height,
+            "map_zoom": 1.0,
+            "map_width": float(width),
+            "map_height": float(height),
+        }]
+        self._overview_record = None
+        self._index_records()
+        self.map_width = float(width)
+        self.map_height = float(height)
+        cache_factor = self._minimum_cache_factor(width, height)
+        self.maximum_scale = 1.0 / cache_factor
+        self.title = title
+        self.nearest = nearest
+        self._clear_render_buffer()
+        self._clear_cache()
+        self._apply_view_state(view_state)
+        return True
+
+    def set_highlight(self, bounds=None):
+        """Set a temporary map-coordinate highlight without changing imagery."""
+        normalized = None
+        if isinstance(bounds, dict):
+            try:
+                x = float(bounds["x"])
+                y = float(bounds["y"])
+                width = float(bounds["width"])
+                height = float(bounds["height"])
+                if not all(math.isfinite(value) for value in (x, y, width, height)):
+                    raise ValueError("non-finite highlight")
+                if width > 0 and height > 0:
+                    normalized = (x, y, width, height)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                normalized = None
+        self.highlight_bounds = normalized
+        if not self._shutdown and self.records:
+            self._display_render_buffer(loading=False)
 
     def fit_to_view(self):
         if self._shutdown or not self.records:
@@ -1021,7 +1089,11 @@ class SparseTileViewer:
     def _sampled_tile(self, record, factor, nearest, generation):
         if self._is_stale(generation):
             return None
-        key = (str(record["path"].resolve()), factor, nearest)
+        key = (
+            record.get("cache_key", str(record["path"].resolve())),
+            factor,
+            nearest,
+        )
         with self._cache_lock:
             cached = self._sampled_cache.pop(key, None)
             if cached is not None:
@@ -1030,7 +1102,9 @@ class SparseTileViewer:
                     return None
                 return cached
 
-        with Image.open(record["path"]) as source:
+        memory_source = record.get("source_image")
+        if memory_source is not None:
+            source = memory_source
             if factor == 1:
                 sampled = source.convert("RGB")
             elif nearest:
@@ -1041,6 +1115,21 @@ class SparseTileViewer:
                 sampled = source.resize(sample_size, Image.Resampling.NEAREST).convert("RGB")
             else:
                 sampled = source.reduce(factor).convert("RGB")
+        else:
+            with Image.open(record["path"]) as source:
+                if factor == 1:
+                    sampled = source.convert("RGB")
+                elif nearest:
+                    sample_size = (
+                        max(1, math.ceil(source.width / factor)),
+                        max(1, math.ceil(source.height / factor)),
+                    )
+                    sampled = source.resize(
+                        sample_size,
+                        Image.Resampling.NEAREST,
+                    ).convert("RGB")
+                else:
+                    sampled = source.reduce(factor).convert("RGB")
 
         if self._is_stale(generation):
             return None
@@ -1074,7 +1163,11 @@ class SparseTileViewer:
         generation,
     ):
         """Upload one pyramid tile once and retain it across view renders."""
-        key = (str(record["path"].resolve()), factor, nearest)
+        key = (
+            record.get("cache_key", str(record["path"].resolve())),
+            factor,
+            nearest,
+        )
         with self._cache_lock:
             cached = self._gpu_cache.pop(key, None)
             if cached is not None:
@@ -1252,6 +1345,8 @@ class SparseTileViewer:
                 anchor="nw",
             )
 
+        self._draw_highlight(view_left, view_top)
+
         self._draw_overlay(
             width,
             height,
@@ -1268,6 +1363,52 @@ class SparseTileViewer:
                 else False
             ),
             loading=loading,
+        )
+
+    def _draw_highlight(self, view_left, view_top):
+        bounds = getattr(self, "highlight_bounds", None)
+        if bounds is None:
+            return
+        x, y, width, height = bounds
+        x1 = (x - view_left) * self.scale
+        y1 = (y - view_top) * self.scale
+        x2 = (x + width - view_left) * self.scale
+        y2 = (y + height - view_top) * self.scale
+
+        # Tiny flakes must remain locatable when the complete image is fitted.
+        minimum_size = 18.0
+        if x2 - x1 < minimum_size:
+            center_x = (x1 + x2) / 2
+            x1 = center_x - minimum_size / 2
+            x2 = center_x + minimum_size / 2
+        if y2 - y1 < minimum_size:
+            center_y = (y1 + y2) / 2
+            y1 = center_y - minimum_size / 2
+            y2 = center_y + minimum_size / 2
+
+        self.canvas.create_rectangle(
+            x1,
+            y1,
+            x2,
+            y2,
+            outline="black",
+            width=7,
+        )
+        self.canvas.create_rectangle(
+            x1,
+            y1,
+            x2,
+            y2,
+            outline="#ff3bd4",
+            width=3,
+        )
+        self.canvas.create_text(
+            (x1 + x2) / 2,
+            max(12, y1 - 7),
+            text="Current region",
+            fill="#ff3bd4",
+            anchor="s",
+            font=("TkDefaultFont", 10, "bold"),
         )
 
     def _current_view_bounds(self, width=None, height=None):

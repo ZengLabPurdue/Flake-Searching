@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tkinter as tk
-from tkinter import ttk
 
 import cv2
 import numpy as np
@@ -65,10 +64,8 @@ class ProfileEditorApp:
 
         self.magnification_var = tk.StringVar(value=DEFAULT_MAGNIFICATION)
         self.resolution_var = tk.StringVar(value=DEFAULT_RESOLUTION)
-        self.active_profile_var = tk.StringVar(value="Active profile: none")
 
         self._build_menu()
-        self._build_toolbar()
 
         self.main_frame = tk.Frame(root, bg="#f0f0f0")
         self.main_frame.pack(fill="both", expand=True)
@@ -106,55 +103,41 @@ class ProfileEditorApp:
         profile_menu.add_command(label="Create Profile", command=self._start_create)
         profile_menu.add_command(label="Load Profile", command=self._load_profile)
         menu_bar.add_cascade(label="Profile", menu=profile_menu)
-        self.root.configure(menu=menu_bar)
 
-    def _build_toolbar(self):
-        toolbar = ttk.Frame(self.root, padding=(8, 6))
-        toolbar.pack(fill="x")
-
-        ttk.Button(
-            toolbar,
-            text="Create profile",
-            command=self._start_create,
-        ).pack(side="left")
-        ttk.Button(
-            toolbar,
-            text="Load profile",
-            command=self._load_profile,
-        ).pack(side="left", padx=(6, 0))
-
-        ttk.Separator(toolbar, orient="vertical").pack(
-            side="left",
-            fill="y",
-            padx=10,
+        preview_menu = tk.Menu(menu_bar, tearoff=0)
+        magnification_menu = tk.Menu(preview_menu, tearoff=0)
+        for magnification in MAGNIFICATIONS:
+            magnification_menu.add_radiobutton(
+                label=magnification,
+                variable=self.magnification_var,
+                value=magnification,
+                command=self._on_preview_calibration_changed,
+            )
+        preview_menu.add_cascade(
+            label="Magnification",
+            menu=magnification_menu,
         )
-        ttk.Label(toolbar, text="Preview calibration").pack(side="left")
-        ttk.Label(toolbar, text="Magnification").pack(side="left", padx=(10, 4))
-        ttk.Combobox(
-            toolbar,
-            textvariable=self.magnification_var,
-            values=MAGNIFICATIONS,
-            width=6,
-            state="readonly",
-        ).pack(side="left")
-        ttk.Label(toolbar, text="Resolution").pack(side="left", padx=(10, 4))
-        ttk.Combobox(
-            toolbar,
-            textvariable=self.resolution_var,
-            values=RESOLUTIONS,
-            width=6,
-            state="readonly",
-        ).pack(side="left")
-        ttk.Label(
-            toolbar,
-            textvariable=self.active_profile_var,
-        ).pack(side="right")
+        resolution_menu = tk.Menu(preview_menu, tearoff=0)
+        for resolution in RESOLUTIONS:
+            resolution_menu.add_radiobutton(
+                label=resolution,
+                variable=self.resolution_var,
+                value=resolution,
+                command=self._on_preview_calibration_changed,
+            )
+        preview_menu.add_cascade(label="Resolution", menu=resolution_menu)
+        menu_bar.add_cascade(label="Preview", menu=preview_menu)
+        self.root.configure(menu=menu_bar)
 
     def _start_create(self):
         self.scan_profile_panel.start_create()
 
     def _load_profile(self):
         self.scan_profile_panel.choose_and_load_profile()
+
+    def _on_preview_calibration_changed(self):
+        if hasattr(self, "scan_profile_panel"):
+            self.scan_profile_panel.preview_calibration_changed()
 
     def display_image(self, image, color_order="RGB"):
         color_order = color_order.upper()
@@ -265,7 +248,6 @@ class ProfileEditorApp:
 
     def set_active_scan_profile(self, profile):
         self.active_scan_profile = profile
-        self.active_profile_var.set(f"Active profile: {profile.name}")
         self.root.title(f"{WINDOW_TITLE} — {profile.name}")
 
     def get_active_scan_profile(self):

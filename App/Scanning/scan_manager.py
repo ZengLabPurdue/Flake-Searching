@@ -277,6 +277,8 @@ class ScanManager:
                     detection_model=detection_model,
                     profile_path=profile_path,
                     display_class_legend=display_class_legend,
+                    material=material,
+                    substrate_thickness=substrate_thickness,
                 )
             elif scan_type == "Vignette Filter":
                 self.create_vignette_filter(
@@ -1315,6 +1317,8 @@ class ScanManager:
         profile_path=None,
         group_threshold_um=None,
         display_class_legend=True,
+        material=None,
+        substrate_thickness=None,
     ):
         """Find regions at 10x, navigate at 20x, and capture each one at 100x."""
         if detection_model not in ("Flake Detection", "Region Detection"):
@@ -1330,9 +1334,12 @@ class ScanManager:
         scan_path = HOME_DIR / "Scans" / datetime.now().strftime(
             "100x Scan (%Y-%m-%d) (%H-%M-%S)"
         )
-        source_dir = scan_path / "All Images" / "10x"
+        source_chip_dir = scan_path / "All Images" / "10x" / "source"
+        source_dir = source_chip_dir / "Raw"
+        processed_dir = source_chip_dir / "Processed"
+        flakes_dir = scan_path / "Flakes Found" / "source"
+        capture_20x_dir = scan_path / "All Images" / "20x"
         capture_dir = scan_path / "All Images" / "100x"
-        processed_dir = scan_path / "Processed" / "10x"
 
         self.update_scan_status(
             scan_type="100x Scan",
@@ -1379,9 +1386,17 @@ class ScanManager:
             annotated_rgb, all_detections, _ = (
                 detector.flake_identifier.identify_flakes_flake_model(image_rgb)
             )
-            processed_rgb = annotated_rgb
+            # The classifier draws boxes on ``annotated_rgb``. Keep Processed
+            # suitable for maps and later analysis by preserving clean pixels.
+            processed_rgb = image_rgb.copy()
             detections = [
-                detection for detection in all_detections if int(detection[0]) == 1
+                detection
+                for detection in all_detections
+                if int(
+                    detection.get("class_id")
+                    if isinstance(detection, dict)
+                    else detection[0]
+                ) == 1
             ]
 
         if detection_model == "Region Detection" and detections:
@@ -1402,43 +1417,61 @@ class ScanManager:
         image_height, image_width = image_rgb.shape[:2]
         regions = []
         for detection in detections:
-            if detection_model == "Region Detection":
-                classification = detection.get("matched_class")
-                classification_group = detection.get("matched_group")
-                bounding_box = detection.get("bounding_box")
-            else:
-                classification = flake_detection.FLAKE_CLASSIFICATIONS[1]
-                classification_group = None
-                bounding_box = detection[1]
-            bounded_box = detector._bounded_box(bounding_box, image_rgb.shape)
-            if classification is None or bounded_box is None:
+            record = detector._create_detection_record(
+                detection,
+                detection_model,
+                {
+                    "path": source_path,
+                    "magnification": "10X",
+                    "pixel_size_um": pixel_size,
+                    "stage_x": source_x,
+                    "stage_y": source_y,
+                    "stage_z": source_z,
+                },
+                image_rgb.shape,
+                scan_path,
+            )
+            if record is None:
                 continue
-            x, y, width, height = bounded_box
-            center_x = x + width / 2
-            center_y = y + height / 2
-            regions.append({
-                "classification": classification,
-                "classification_group": classification_group,
-                "bounding_box_px": {
-                    "x": round(x, 3),
-                    "y": round(y, 3),
-                    "width": round(width, 3),
-                    "height": round(height, 3),
-                },
-                "bounding_box_center_px": {
-                    "x": round(center_x, 3),
-                    "y": round(center_y, 3),
-                },
+            bounding_box = record["bounding_box_px"]
+            width = float(bounding_box["width"])
+            height = float(bounding_box["height"])
+            center = record["location"]["bounding_box_center_px"]
+            record.update({
+                # Retain these v1 fields while the canonical v2 measurements
+                # live under ``statistics`` and ``location``.
+                "bounding_box_center_px": dict(center),
                 "size_um": {
                     "width": round(width * pixel_size, 6),
                     "height": round(height * pixel_size, 6),
                     "bounding_box_area": round(width * height * pixel_size ** 2, 6),
                 },
                 "target_position_10x_um": {
-                    "x": round(source_x - (center_x - image_width / 2) * pixel_size, 6),
-                    "y": round(source_y - (center_y - image_height / 2) * pixel_size, 6),
+                    "x": round(
+                        source_x - (float(center["x"]) - image_width / 2) * pixel_size,
+                        6,
+                    ),
+                    "y": round(
+                        source_y - (float(center["y"]) - image_height / 2) * pixel_size,
+                        6,
+                    ),
                 },
             })
+            regions.append(record)
+
+        result_path = None
+        if regions:
+            result_path = self.frame_processor.save_image(
+                image=cv2.cvtColor(annotated_rgb, cv2.COLOR_RGB2BGR),
+                save_dir=flakes_dir,
+                filename="source_10x.png",
+                vignette_applied=True,
+            )
+            relative_result_path = Path(result_path).relative_to(
+                scan_path
+            ).as_posix()
+            for region in regions:
+                region["result_image"] = relative_result_path
 
         if group_threshold_um is None:
             camera_width, camera_height = self.camera.get_Size()
@@ -1477,6 +1510,25 @@ class ScanManager:
                     "y": round(navigation_y, 6),
                 }
 
+                filename = f"flake_group_{index:04d}.png"
+                image_20x = self.frame_processor.capture_frame(
+                    cancel_check=self._check_cancelled,
+                )
+                if image_20x is None:
+                    raise RuntimeError(
+                        f"The camera did not return 20x image {index}."
+                    )
+                image_20x = self.frame_processor.apply_vignette_filter(image_20x)
+                saved_20x_path = self.frame_processor.save_image(
+                    image=image_20x,
+                    save_dir=capture_20x_dir,
+                    filename=filename,
+                    vignette_applied=True,
+                )
+                relative_20x_path = Path(saved_20x_path).relative_to(
+                    scan_path
+                ).as_posix()
+
                 try:
                     self._change_objective(5)
                     capture_x, capture_y, capture_z = self.stage.get_position()
@@ -1487,7 +1539,6 @@ class ScanManager:
                         raise RuntimeError(
                             f"The camera did not return 100x image {index}."
                         )
-                    filename = f"flake_group_{index:04d}.png"
                     saved_path = self.frame_processor.save_image(
                         image=image_100x,
                         save_dir=capture_dir,
@@ -1508,6 +1559,7 @@ class ScanManager:
                     "group_id": index,
                     "navigation_position_20x_um": navigation_position,
                     "capture_position_100x_um": capture_position,
+                    "image_20x": relative_20x_path,
                     "image_100x": relative_image_path,
                     "region_indices": [
                         member_index + 1
@@ -1519,6 +1571,7 @@ class ScanManager:
                         "capture_group_id": index,
                         "navigation_position_20x_um": navigation_position,
                         "capture_position_100x_um": capture_position,
+                        "image_20x": relative_20x_path,
                         "image_100x": relative_image_path,
                     })
                 elapsed = time.time() - start_time
@@ -1534,9 +1587,11 @@ class ScanManager:
 
         manifest = {
             "schema": "flake-search.100x-scan",
-            "version": 1,
+            "version": 2,
             "detection_model": detection_model,
             "profile_path": str(profile_path) if profile_path is not None else None,
+            "material": material,
+            "substrate_thickness": substrate_thickness,
             "region_color_seed": color_seed,
             "source_image": Path(source_path).relative_to(scan_path).as_posix(),
             "source_capture_position_10x_um": {
@@ -1558,6 +1613,7 @@ class ScanManager:
                 }
                 for capture_group in capture_groups
             ],
+            "detections": regions,
             "flakes": regions,
         }
         scan_path.mkdir(parents=True, exist_ok=True)

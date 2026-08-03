@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from time import perf_counter
 
@@ -10,6 +11,8 @@ from tkinter import ttk
 from config import PIXEL_SIZE
 from Imaging import image_metadata
 from Scanning import contour_finder
+from Scanning import region_classifier
+from Scanning import scan_profile as scan_profile_model
 from Scanning.contour_extractor import get_region_from_point
 from Scanning.contour_finder import region_contrast_rgb
 from Scanning.scan_profile import (
@@ -19,6 +22,30 @@ from Scanning.scan_profile import (
     ScanProfileError,
     build_region_overlay,
 )
+
+
+FILTER_TYPE_SIZE = getattr(scan_profile_model, "FILTER_TYPE_SIZE", "size")
+FILTER_TYPE_BOUNDING_BOX = getattr(
+    scan_profile_model,
+    "FILTER_TYPE_BOUNDING_BOX",
+    "bounding_box",
+)
+FILTER_TYPE_PERIMETER_AREA_RATIO = getattr(
+    scan_profile_model,
+    "FILTER_TYPE_PERIMETER_AREA_RATIO",
+    "perimeter_area_ratio",
+)
+FILTER_TYPE_NEURAL_NETWORK = getattr(
+    scan_profile_model,
+    "FILTER_TYPE_NEURAL_NETWORK",
+    "neural_network",
+)
+FILTER_TYPE_LABELS = {
+    FILTER_TYPE_SIZE: "Size",
+    FILTER_TYPE_BOUNDING_BOX: "Width & Height",
+    FILTER_TYPE_PERIMETER_AREA_RATIO: "Perimeter / Area",
+    FILTER_TYPE_NEURAL_NETWORK: "Neural Network Flake Filter",
+}
 
 
 class ScanProfilePanel:
@@ -34,6 +61,20 @@ class ScanProfilePanel:
     CLASSIFICATION_VALUES = {
         label: value for value, label in CLASSIFICATION_LABELS.items()
     }
+    FILTER_TYPE_LABELS = FILTER_TYPE_LABELS
+    FILTER_LABEL_TO_TYPE = {
+        label: filter_type for filter_type, label in FILTER_TYPE_LABELS.items()
+    }
+    DEFAULT_FILTER_BOUNDS = {
+        "minimum_um": "",
+        "maximum_um": "",
+        "minimum_width_um": "",
+        "maximum_width_um": "",
+        "minimum_height_um": "",
+        "maximum_height_um": "",
+        "minimum_per_um": "",
+        "maximum_per_um": "",
+    }
 
     def __init__(self, parent, root, app, scan_profile: ScanProfile):
         self.parent = parent
@@ -44,11 +85,13 @@ class ScanProfilePanel:
         self.mode = "create"
         self.class_edit_active = False
         self.editor_kind: str | None = None
-        self.selected_item: tuple[str, int] | None = None
+        self.selected_item: tuple[str, object] | None = None
         self.editing_class_index: int | None = None
+        self.editing_filter_id: str | None = None
         self.pending_new_class = False
+        self.pending_new_filter = False
         self._updating_item_list = False
-        self._display_items: list[tuple[str, int]] = []
+        self._display_items: list[tuple[str, object]] = []
         self.drag_class_index = None
 
         self.current_source_path: Path | None = None
@@ -61,10 +104,11 @@ class ScanProfilePanel:
         self.preview_source_path: Path | None = None
         self.preview_image_bgr: np.ndarray | None = None
         self.preview_result_rgb: np.ndarray | None = None
+        self.preview_details: dict | None = None
+        self.preview_regions: list[dict] = []
+        self.preview_region_index: int | None = None
 
         self.profile_name_var = tk.StringVar()
-        self.profile_minimum_size_var = tk.StringVar()
-        self.profile_maximum_size_var = tk.StringVar()
         self.class_name_var = tk.StringVar()
         self.class_group_var = tk.StringVar()
         self.identify_var = tk.BooleanVar(value=True)
@@ -73,15 +117,27 @@ class ScanProfilePanel:
         )
         self.range_minimum_vars = [tk.StringVar() for _ in range(3)]
         self.range_maximum_vars = [tk.StringVar() for _ in range(3)]
-        self.minimum_size_var = tk.StringVar()
-        self.maximum_size_var = tk.StringVar()
         self.threshold_var = tk.StringVar(value=str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
+        self.filter_type_var = tk.StringVar(
+            value=self.FILTER_TYPE_LABELS[FILTER_TYPE_SIZE]
+        )
+        self.filter_enabled_var = tk.BooleanVar(value=True)
+        self.filter_bound_vars = {
+            key: tk.StringVar(value=value)
+            for key, value in self.DEFAULT_FILTER_BOUNDS.items()
+        }
         self.editor_title_var = tk.StringVar(value="Class")
         self.tolerance_label_var = tk.StringVar(value="Color tolerance")
         self.contrast_var = tk.StringVar(value="RGB contrast: —")
         self.item_count_var = tk.StringVar(value="Items: 0")
         self.preview_enabled_var = tk.BooleanVar(value=False)
+        self.preview_show_all_var = tk.BooleanVar(value=False)
+        self.preview_legend_var = tk.BooleanVar(value=True)
         self.preview_time_var = tk.StringVar(value="Preview time: —")
+        self.preview_region_position_var = tk.StringVar(value="Good regions: —")
+        self.preview_region_stats_var = tk.StringVar(
+            value="Run the profile to inspect accepted regions."
+        )
         self.status_var = tk.StringVar(
             value="Create or load a profile from the Scan menu."
         )
@@ -102,6 +158,47 @@ class ScanProfilePanel:
             fg="black",
             font=("TkDefaultFont", 10, "bold"),
         )
+
+    def _build_filter_bounds_row(
+        self,
+        parent,
+        label,
+        minimum_key,
+        maximum_key,
+    ):
+        Label(parent, text=label, bg="white", fg="black").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=(5, 0),
+        )
+        Label(parent, text="Min", bg="white", fg="black").grid(
+            row=0,
+            column=1,
+            padx=(7, 2),
+            pady=(5, 0),
+        )
+        Label(parent, text="Max", bg="white", fg="black").grid(
+            row=0,
+            column=2,
+            padx=(3, 0),
+            pady=(5, 0),
+        )
+        minimum_entry = ttk.Entry(
+            parent,
+            textvariable=self.filter_bound_vars[minimum_key],
+            width=7,
+        )
+        maximum_entry = ttk.Entry(
+            parent,
+            textvariable=self.filter_bound_vars[maximum_key],
+            width=7,
+        )
+        minimum_entry.grid(row=1, column=1, sticky="ew", padx=(7, 2), pady=1)
+        maximum_entry.grid(row=1, column=2, sticky="ew", padx=(3, 0), pady=1)
+        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(2, weight=1)
+        self.filter_bound_entries.extend((minimum_entry, maximum_entry))
 
     def _build_panel(self):
         panel = Frame(self.parent, bg="#f0f0f0", width=254)
@@ -134,28 +231,6 @@ class ScanProfilePanel:
             textvariable=self.profile_name_var,
         )
         self.profile_name_entry.pack(side="left", fill="x", expand=True, padx=(6, 0))
-
-        profile_size_row = Frame(background, bg="white")
-        profile_size_row.pack(fill="x", pady=(5, 0))
-        Label(profile_size_row, text="Size (um)", bg="white", fg="black").pack(side="left")
-        Label(profile_size_row, text="Min", bg="white", fg="black").pack(
-            side="left", padx=(8, 3)
-        )
-        self.profile_minimum_size_entry = ttk.Entry(
-            profile_size_row,
-            textvariable=self.profile_minimum_size_var,
-            width=6,
-        )
-        self.profile_minimum_size_entry.pack(side="left", fill="x", expand=True)
-        Label(profile_size_row, text="Max", bg="white", fg="black").pack(
-            side="left", padx=(8, 3)
-        )
-        self.profile_maximum_size_entry = ttk.Entry(
-            profile_size_row,
-            textvariable=self.profile_maximum_size_var,
-            width=6,
-        )
-        self.profile_maximum_size_entry.pack(side="left", fill="x", expand=True)
 
         self.item_count_label = Label(
             background,
@@ -198,7 +273,13 @@ class ScanProfilePanel:
             command=self.new_class,
         )
         self.new_class_button.grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        self.new_class_button.grid_configure(columnspan=2, padx=0)
+        self.new_filter_button = ttk.Button(
+            item_buttons,
+            text="New filter",
+            style="Normal.TButton",
+            command=self.new_filter,
+        )
+        self.new_filter_button.grid(row=0, column=1, sticky="ew", padx=(2, 0))
         self.edit_item_button = ttk.Button(
             item_buttons,
             text="Edit selected",
@@ -316,6 +397,124 @@ class ScanProfilePanel:
         )
         self.identify_check.pack(anchor="w", pady=(4, 0))
 
+        self.filter_options = Frame(self.dynamic_editor, bg="white")
+        filter_type_row = Frame(self.filter_options, bg="white")
+        filter_type_row.pack(fill="x", pady=(5, 0))
+        Label(filter_type_row, text="Type", bg="white", fg="black").pack(
+            side="left"
+        )
+        self.filter_type_combo = ttk.Combobox(
+            filter_type_row,
+            textvariable=self.filter_type_var,
+            values=tuple(self.FILTER_LABEL_TO_TYPE),
+            state="readonly",
+            width=22,
+        )
+        self.filter_type_combo.pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(6, 0),
+        )
+        self.filter_type_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_filter_type_changed,
+        )
+        self.filter_enabled_check = ttk.Checkbutton(
+            self.filter_options,
+            text="Enabled",
+            variable=self.filter_enabled_var,
+            style="Profile.TCheckbutton",
+        )
+        self.filter_enabled_check.pack(anchor="w", pady=(4, 0))
+
+        self.size_filter_options = Frame(self.filter_options, bg="white")
+        self.filter_bound_entries = []
+        self._build_filter_bounds_row(
+            self.size_filter_options,
+            "Size (µm)",
+            "minimum_um",
+            "maximum_um",
+        )
+
+        self.bounding_box_filter_options = Frame(self.filter_options, bg="white")
+        Label(
+            self.bounding_box_filter_options,
+            text="Bounding box (µm)",
+            bg="white",
+            fg="black",
+        ).grid(row=0, column=0, sticky="w", pady=(5, 1))
+        Label(
+            self.bounding_box_filter_options,
+            text="Min",
+            bg="white",
+            fg="black",
+        ).grid(row=0, column=1, padx=(7, 2), pady=(5, 1))
+        Label(
+            self.bounding_box_filter_options,
+            text="Max",
+            bg="white",
+            fg="black",
+        ).grid(row=0, column=2, padx=(3, 0), pady=(5, 1))
+        for row, (label, minimum_key, maximum_key) in enumerate(
+            (
+                ("Width", "minimum_width_um", "maximum_width_um"),
+                ("Height", "minimum_height_um", "maximum_height_um"),
+            ),
+            start=1,
+        ):
+            Label(
+                self.bounding_box_filter_options,
+                text=label,
+                bg="white",
+                fg="black",
+            ).grid(row=row, column=0, sticky="w", pady=1)
+            minimum_entry = ttk.Entry(
+                self.bounding_box_filter_options,
+                textvariable=self.filter_bound_vars[minimum_key],
+                width=7,
+            )
+            maximum_entry = ttk.Entry(
+                self.bounding_box_filter_options,
+                textvariable=self.filter_bound_vars[maximum_key],
+                width=7,
+            )
+            minimum_entry.grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                padx=(7, 2),
+                pady=1,
+            )
+            maximum_entry.grid(
+                row=row,
+                column=2,
+                sticky="ew",
+                padx=(3, 0),
+                pady=1,
+            )
+            self.filter_bound_entries.extend((minimum_entry, maximum_entry))
+        self.bounding_box_filter_options.columnconfigure(1, weight=1)
+        self.bounding_box_filter_options.columnconfigure(2, weight=1)
+
+        self.ratio_filter_options = Frame(self.filter_options, bg="white")
+        self._build_filter_bounds_row(
+            self.ratio_filter_options,
+            "Perimeter / area (1/µm)",
+            "minimum_per_um",
+            "maximum_per_um",
+        )
+
+        self.neural_filter_options = Frame(self.filter_options, bg="white")
+        Label(
+            self.neural_filter_options,
+            text="Coming soon — this filter cannot be enabled yet.",
+            bg="white",
+            fg="#555555",
+            justify="left",
+            wraplength=230,
+        ).pack(anchor="w", pady=(5, 0))
+
         self.region_options = Frame(self.dynamic_editor, bg="white")
         region_row = Frame(self.region_options, bg="white")
         region_row.pack(fill="x", pady=(5, 0))
@@ -386,32 +585,6 @@ class ScanProfilePanel:
         self.range_options.columnconfigure(1, weight=1)
         self.range_options.columnconfigure(2, weight=1)
 
-        self.class_size_options = Frame(self.dynamic_editor, bg="white")
-        Label(
-            self.class_size_options,
-            text="Class size (um)",
-            bg="white",
-            fg="black",
-        ).pack(side="left")
-        Label(self.class_size_options, text="Min", bg="white", fg="black").pack(
-            side="left", padx=(7, 3)
-        )
-        self.minimum_size_entry = ttk.Entry(
-            self.class_size_options,
-            textvariable=self.minimum_size_var,
-            width=6,
-        )
-        self.minimum_size_entry.pack(side="left", fill="x", expand=True)
-        Label(self.class_size_options, text="Max", bg="white", fg="black").pack(
-            side="left", padx=(7, 3)
-        )
-        self.maximum_size_entry = ttk.Entry(
-            self.class_size_options,
-            textvariable=self.maximum_size_var,
-            width=6,
-        )
-        self.maximum_size_entry.pack(side="left", fill="x", expand=True)
-
         self.contrast_label = Label(
             self.dynamic_editor,
             textvariable=self.contrast_var,
@@ -454,12 +627,67 @@ class ScanProfilePanel:
         )
         self.preview_toggle.pack(anchor="w", pady=(4, 0))
         self.preview_toggle.state(["disabled"])
+        self.preview_legend_check = ttk.Checkbutton(
+            background,
+            text="Show class legend",
+            variable=self.preview_legend_var,
+            command=self.toggle_profile_preview,
+            style="Profile.TCheckbutton",
+        )
+        self.preview_legend_check.pack(anchor="w", pady=(3, 0))
         Label(
             background,
             textvariable=self.preview_time_var,
             bg="white",
             fg="#333333",
         ).pack(anchor="w", pady=(2, 0))
+
+        preview_navigation = Frame(background, bg="white")
+        preview_navigation.pack(fill="x", pady=(4, 0))
+        self.previous_region_button = ttk.Button(
+            preview_navigation,
+            text="Previous",
+            style="Normal.TButton",
+            command=self.show_previous_preview_region,
+            width=8,
+        )
+        self.previous_region_button.pack(side="left")
+        self.next_region_button = ttk.Button(
+            preview_navigation,
+            text="Next",
+            style="Normal.TButton",
+            command=self.show_next_preview_region,
+            width=6,
+        )
+        self.next_region_button.pack(side="left", padx=(4, 0))
+        Label(
+            preview_navigation,
+            textvariable=self.preview_region_position_var,
+            bg="white",
+            fg="#333333",
+        ).pack(side="right")
+        self.previous_region_button.state(["disabled"])
+        self.next_region_button.state(["disabled"])
+
+        self.preview_show_all_check = ttk.Checkbutton(
+            background,
+            text="Display everything",
+            variable=self.preview_show_all_var,
+            command=self.toggle_profile_preview,
+            style="Profile.TCheckbutton",
+        )
+        self.preview_show_all_check.pack(anchor="w", pady=(3, 0))
+        self.preview_show_all_check.state(["disabled"])
+        self.preview_region_stats_label = Label(
+            background,
+            textvariable=self.preview_region_stats_var,
+            bg="white",
+            fg="#333333",
+            justify="left",
+            anchor="w",
+            wraplength=234,
+        )
+        self.preview_region_stats_label.pack(fill="x", pady=(3, 0))
 
         self.status_group = Frame(background, bg="white")
         self.status_group.pack(fill="x", pady=(7, 0))
@@ -487,9 +715,8 @@ class ScanProfilePanel:
         self.panel_background = background
         self.profile_edit_widgets = (
             self.profile_name_entry,
-            self.profile_minimum_size_entry,
-            self.profile_maximum_size_entry,
             self.new_class_button,
+            self.new_filter_button,
             self.edit_item_button,
             self.copy_item_button,
             self.extend_profile_button,
@@ -503,11 +730,12 @@ class ScanProfilePanel:
             self.class_group_combo,
             self.classification_type_combo,
             self.identify_check,
+            self.filter_type_combo,
+            self.filter_enabled_check,
+            *self.filter_bound_entries,
             self.load_image_button,
             self.threshold_spinbox,
             *self.range_entries,
-            self.minimum_size_entry,
-            self.maximum_size_entry,
             self.confirm_item_button,
         )
         self._show_editor_options(None)
@@ -518,16 +746,16 @@ class ScanProfilePanel:
         self.mode = "create"
         self.scan_profile.clear()
         self.profile_name_var.set("")
-        self.profile_minimum_size_var.set("")
-        self.profile_maximum_size_var.set("")
         self._reset_editor()
         self._reset_preview()
         self._set_editing_enabled(True)
         self._refresh_item_list()
-        self.status_var.set("Name the profile, then create a class.")
+        self.status_var.set("Name the profile, then create a class or filter.")
         self.app.set_view("Create Search Profile")
         self.show()
-        self.app.display_image_message("Create a class or load a preview image.")
+        self.app.display_image_message(
+            "Create a class or filter, or load a preview image."
+        )
         self.profile_name_entry.focus_set()
 
     def choose_and_load_profile(self):
@@ -536,7 +764,7 @@ class ScanProfilePanel:
         self._set_item_editing_enabled(False)
         self.app.set_view("Load Search Profile")
         self.show()
-        self.app.display_image_message("Open a profile, then select a class.")
+        self.app.display_image_message("Open a profile, then select an item.")
         selected = self._choose_profile_path("Load Scan Search Profile")
         if not selected:
             return
@@ -549,19 +777,14 @@ class ScanProfilePanel:
         self.app.set_active_scan_profile(profile)
         messagebox.showinfo(
             "Profile Loaded",
-            f"Loaded '{profile.name}' with {len(profile.classes)} class(es).",
+            f"Loaded '{profile.name}' with {len(profile.classes)} class(es) and "
+            f"{len(profile.filters)} filter(s).",
         )
 
     def show_loaded_profile(self, profile: ScanProfile):
         self.mode = "edit"
         self.scan_profile = profile
         self.profile_name_var.set(profile.name)
-        self.profile_minimum_size_var.set(
-            "" if profile.minimum_size_um is None else f"{profile.minimum_size_um:g}"
-        )
-        self.profile_maximum_size_var.set(
-            "" if profile.maximum_size_um is None else f"{profile.maximum_size_um:g}"
-        )
         self._reset_editor()
         self._reset_preview()
         self._set_editing_enabled(True)
@@ -571,7 +794,7 @@ class ScanProfilePanel:
         )
         self.app.set_view("Load Search Profile")
         self.show()
-        self.app.display_image_message("Select a class or load a preview image.")
+        self.app.display_image_message("Select an item or load a preview image.")
 
     def new_class(self):
         if self.class_edit_active:
@@ -580,7 +803,9 @@ class ScanProfilePanel:
         self._clear_list_selection()
         self.editor_kind = "class"
         self.pending_new_class = True
+        self.pending_new_filter = False
         self.editing_class_index = None
+        self.editing_filter_id = None
         self.selected_item = None
         self.class_name_var.set(self._next_default_class_name())
         self.class_group_var.set("")
@@ -589,8 +814,6 @@ class ScanProfilePanel:
             self.CLASSIFICATION_LABELS[CLASSIFICATION_SAMPLE]
         )
         self._set_range_values(None, None)
-        self.minimum_size_var.set("")
-        self.maximum_size_var.set("")
         self.threshold_var.set(str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
         source_available = self.current_image_bgr is not None
         self._clear_region_selection()
@@ -605,16 +828,44 @@ class ScanProfilePanel:
             self.app.display_image_message("Open an image to create this class.")
         self.class_name_entry.focus_set()
 
+    def new_filter(self):
+        if self.class_edit_active:
+            self._show_confirm_current_message()
+            return
+        self._clear_list_selection()
+        self.editor_kind = "filter"
+        self.pending_new_class = False
+        self.pending_new_filter = True
+        self.editing_class_index = None
+        self.editing_filter_id = None
+        self.selected_item = None
+        self.class_name_var.set(self._next_default_filter_name())
+        self.filter_type_var.set(self.FILTER_TYPE_LABELS[FILTER_TYPE_SIZE])
+        self.filter_enabled_var.set(True)
+        self._set_filter_bounds(None)
+        self._show_editor_options("filter")
+        self._set_item_editing_enabled(True)
+        self._refresh_item_list(select_pending=True)
+        self.status_var.set(
+            "Choose a filter type and enter its inclusive accepted range."
+        )
+        self.app.display_image_message(
+            "Configure the filter, or load a preview image to test the profile."
+        )
+        self.class_name_entry.focus_set()
+
     def edit_selected_item(self):
         selected = self._selected_list_item()
         if selected is None:
-            messagebox.showinfo("Edit Class", "Select a confirmed class first.")
+            messagebox.showinfo("Edit Item", "Select a confirmed class or filter first.")
             return
-        _kind, index = selected
-        self.editor_kind = "class"
-        self.editing_class_index = index
+        kind, item_key = selected
+        self.editor_kind = kind
+        self.editing_class_index = item_key if kind == "class" else None
+        self.editing_filter_id = item_key if kind == "filter" else None
         self.pending_new_class = False
-        self._show_editor_options("class")
+        self.pending_new_filter = False
+        self._show_editor_options(kind)
         self._set_item_editing_enabled(True)
         self.status_var.set(f"Editing {self.class_name_var.get()}.")
         self.class_name_entry.focus_set()
@@ -625,16 +876,22 @@ class ScanProfilePanel:
             return
         selected = self._selected_list_item()
         if selected is None:
-            messagebox.showinfo("Copy Class", "Select a confirmed class first.")
+            messagebox.showinfo("Copy Item", "Select a confirmed class or filter first.")
             return
-        _kind, index = selected
-        copied = self.scan_profile.copy_class(index)
-        new_index = len(self.scan_profile.classes) - 1
-        self._refresh_item_list(select_item=("class", new_index))
+        kind, item_key = selected
+        if kind == "class":
+            copied = self.scan_profile.copy_class(item_key)
+            copied_key = len(self.scan_profile.classes) - 1
+        else:
+            copied = self.scan_profile.copy_filter(item_key)
+            copied_key = copied["id"]
+        self._clear_preview_analysis()
+        self._refresh_item_list(select_item=(kind, copied_key))
         self._on_item_selected()
-        self.editor_kind = "class"
-        self.editing_class_index = new_index
-        self._show_editor_options("class")
+        self.editor_kind = kind
+        self.editing_class_index = copied_key if kind == "class" else None
+        self.editing_filter_id = copied_key if kind == "filter" else None
+        self._show_editor_options(kind)
         self._set_item_editing_enabled(True)
         self.status_var.set(f"Copied as {copied['name']}. Modify it, then confirm.")
 
@@ -647,17 +904,21 @@ class ScanProfilePanel:
             return
         try:
             source_profile = ScanProfile(self.scan_profile.profiles_dir).load_profile(selected)
+            previous_filter_count = len(self.scan_profile.filters)
             added_classes = self.scan_profile.extend_from_profile(source_profile)
+            added_filter_count = len(self.scan_profile.filters) - previous_filter_count
         except (OSError, ScanProfileError) as exc:
             messagebox.showerror("Profile Extend Error", str(exc))
             return
+        self._clear_preview_analysis()
         self._refresh_item_list()
         self.status_var.set(
-            f"Added {len(added_classes)} class(es) from {source_profile.name}."
+            f"Added {len(added_classes)} class(es) and {added_filter_count} filter(s) "
+            f"from {source_profile.name}."
         )
 
     def remove_selected_item(self):
-        if self.pending_new_class:
+        if self.pending_new_class or self.pending_new_filter:
             self._reset_editor()
             self._refresh_item_list()
             self.status_var.set("Cancelled the unconfirmed item.")
@@ -665,8 +926,13 @@ class ScanProfilePanel:
         selected = self._selected_list_item()
         if selected is None:
             return
-        _kind, index = selected
-        removed = self.scan_profile.remove_class(index)
+        kind, item_key = selected
+        removed = (
+            self.scan_profile.remove_class(item_key)
+            if kind == "class"
+            else self.scan_profile.remove_filter(item_key)
+        )
+        self._clear_preview_analysis()
         self._reset_editor()
         self._clear_pending_image()
         self._refresh_item_list()
@@ -715,7 +981,10 @@ class ScanProfilePanel:
         if not self.class_edit_active:
             self._show_create_or_edit_item_prompt()
             return
-        self._confirm_class()
+        if self.editor_kind == "filter":
+            self._confirm_filter()
+        else:
+            self._confirm_class()
 
     def _confirm_class(self):
         classification_type = self._classification_type()
@@ -727,7 +996,6 @@ class ScanProfilePanel:
         class_name = self.class_name_var.get().strip() or self._next_default_class_name()
         self.class_name_var.set(class_name)
         try:
-            minimum_size, maximum_size = self._get_class_size_requirement()
             if classification_type == CLASSIFICATION_RANGE:
                 minimum_rgb, maximum_rgb = self._get_contrast_range()
                 threshold = None
@@ -774,8 +1042,6 @@ class ScanProfilePanel:
         try:
             common_arguments = {
                 "name": class_name,
-                "minimum_size_um": minimum_size,
-                "maximum_size_um": maximum_size,
                 "group": self.class_group_var.get(),
                 "identify": bool(self.identify_var.get()),
                 "index": target_index,
@@ -811,7 +1077,36 @@ class ScanProfilePanel:
             )
         self._finish_item_confirmation(profile_class, status)
 
+    def _confirm_filter(self):
+        filter_type = self._selected_filter_type()
+        filter_name = (
+            self.class_name_var.get().strip()
+            or self._next_default_filter_name()
+        )
+        self.class_name_var.set(filter_name)
+        try:
+            bounds = self._get_filter_bounds(filter_type)
+            profile_filter = self.scan_profile.set_filter(
+                self.editing_filter_id,
+                filter_name,
+                filter_type,
+                bool(self.filter_enabled_var.get())
+                if filter_type != FILTER_TYPE_NEURAL_NETWORK
+                else False,
+                **bounds,
+            )
+        except ScanProfileError as exc:
+            messagebox.showwarning("Invalid Filter", str(exc))
+            return
+        state = "enabled" if profile_filter["enabled"] else "disabled"
+        self._finish_item_confirmation(
+            profile_filter,
+            f"Confirmed {profile_filter['name']}: "
+            f"{self.FILTER_TYPE_LABELS[profile_filter['type']]} ({state}).",
+        )
+
     def _finish_item_confirmation(self, item, status):
+        self._clear_preview_analysis()
         if self.current_image_bgr is not None:
             self._display_bgr(self.current_image_bgr)
         self._reset_editor(clear_image=False)
@@ -832,10 +1127,7 @@ class ScanProfilePanel:
             return
         self.preview_source_path = path
         self.preview_image_bgr = image_bgr
-        self.preview_result_rgb = None
-        self.preview_enabled_var.set(False)
-        self.preview_time_var.set("Preview time: —")
-        self.preview_toggle.state(["disabled"])
+        self._clear_preview_analysis()
         self.app.set_view(
             "Load Search Profile" if self.mode == "edit" else "Create Search Profile"
         )
@@ -853,10 +1145,10 @@ class ScanProfilePanel:
             messagebox.showinfo("Empty Profile", "Add at least one class first.")
             return
         try:
+            self._clear_preview_analysis()
             self.status_var.set("Running profile preview...")
             self.preview_time_var.set("Preview time: running...")
             self.root.update_idletasks()
-            self.scan_profile.set_size_requirement(*self._get_profile_size_requirement())
             pixel_size = self._preview_pixel_size()
             started_at = perf_counter()
             result_rgb, _, details = contour_finder.find_flakes(
@@ -866,6 +1158,7 @@ class ScanProfilePanel:
                 pixel_size_um=pixel_size,
                 color_seed=0,
                 legend_position=self.PREVIEW_LEGEND_POSITION,
+                draw_legend=False,
             )
             elapsed_seconds = perf_counter() - started_at
         except (OSError, ScanProfileError, ValueError, cv2.error) as exc:
@@ -873,11 +1166,15 @@ class ScanProfilePanel:
             messagebox.showerror("Profile Preview Error", str(exc))
             return
         self.preview_result_rgb = result_rgb.copy()
+        self.preview_details = details
+        self.preview_regions = list(details.get("combined_region_results", ()))
+        self.preview_region_index = 0 if self.preview_regions else None
         self.preview_time_var.set(f"Preview time: {elapsed_seconds:.3f}s")
         self.preview_enabled_var.set(True)
         self.preview_toggle.state(["!disabled"])
+        self._update_preview_region_controls()
         self.toggle_profile_preview()
-        matched = sum(item["matched_class"] is not None for item in details["region_results"])
+        matched = len(self.preview_regions)
         self.status_var.set(
             f"Preview complete in {elapsed_seconds:.3f}s: "
             f"{matched} identified, "
@@ -887,17 +1184,190 @@ class ScanProfilePanel:
     def toggle_profile_preview(self):
         if self.preview_image_bgr is None:
             return
-        if self.preview_enabled_var.get() and self.preview_result_rgb is not None:
-            self.app.display_image(self.preview_result_rgb)
+        showing_result = (
+            self.preview_enabled_var.get()
+            and self.preview_result_rgb is not None
+        )
+        if showing_result:
+            image_rgb = self.preview_result_rgb.copy()
+            selected_region = self._selected_preview_region()
+            show_everything = self.preview_show_all_var.get()
+            if not show_everything and selected_region is not None:
+                image_rgb = self._isolate_preview_region(
+                    image_rgb,
+                    selected_region,
+                    self.preview_details,
+                )
+            if self.preview_legend_var.get():
+                legend_regions = (
+                    self.preview_regions
+                    if show_everything
+                    else ([selected_region] if selected_region is not None else [])
+                )
+                image_rgb = self._draw_preview_legend(image_rgb, legend_regions)
         else:
-            self._display_bgr(self.preview_image_bgr)
+            image_rgb = cv2.cvtColor(self.preview_image_bgr, cv2.COLOR_BGR2RGB)
+        self.app.display_image(image_rgb, color_order="RGB")
+
+    def preview_calibration_changed(self):
+        if self.preview_image_bgr is None:
+            return
+        self._clear_preview_analysis()
+        self._display_bgr(self.preview_image_bgr)
+        self.status_var.set(
+            "Preview calibration changed. Run the profile again to refresh results."
+        )
+
+    def show_previous_preview_region(self):
+        self._step_preview_region(-1)
+
+    def show_next_preview_region(self):
+        self._step_preview_region(1)
+
+    def _step_preview_region(self, direction):
+        if not self.preview_regions:
+            return
+        current = self.preview_region_index or 0
+        self.preview_region_index = (current + direction) % len(self.preview_regions)
+        self._update_preview_region_controls()
+        self.toggle_profile_preview()
+
+    def _selected_preview_region(self):
+        if (
+            self.preview_region_index is None
+            or not 0 <= self.preview_region_index < len(self.preview_regions)
+        ):
+            return None
+        return self.preview_regions[self.preview_region_index]
+
+    @staticmethod
+    def _isolate_preview_region(image_rgb, region, preview_details=None):
+        highlighted = np.ascontiguousarray(image_rgb.copy())
+        if isinstance(preview_details, dict):
+            class_index_map = preview_details.get("class_index_map")
+            if (
+                isinstance(class_index_map, np.ndarray)
+                and class_index_map.shape == highlighted.shape[:2]
+            ):
+                highlighted[class_index_map > 0] = (255, 255, 255)
+        bounding_box = region.get("bounding_box")
+        if not isinstance(bounding_box, dict):
+            return highlighted
+        try:
+            x = int(round(float(bounding_box["x"])))
+            y = int(round(float(bounding_box["y"])))
+            width = max(1, int(round(float(bounding_box["width"]))))
+            height = max(1, int(round(float(bounding_box["height"]))))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return highlighted
+        image_height, image_width = highlighted.shape[:2]
+        region_x1 = max(0, x)
+        region_y1 = max(0, y)
+        region_x2 = min(image_width, x + width)
+        region_y2 = min(image_height, y + height)
+        if region_x1 >= region_x2 or region_y1 >= region_y2:
+            return highlighted
+        instance_mask = region.get("instance_mask")
+        if not isinstance(instance_mask, np.ndarray) or instance_mask.ndim != 2:
+            return highlighted
+        mask_x1 = region_x1 - x
+        mask_y1 = region_y1 - y
+        mask_x2 = mask_x1 + (region_x2 - region_x1)
+        mask_y2 = mask_y1 + (region_y2 - region_y1)
+        local_mask = instance_mask[mask_y1:mask_y2, mask_x1:mask_x2] > 0
+        if local_mask.shape != (region_y2 - region_y1, region_x2 - region_x1):
+            return highlighted
+        color = region.get("matched_color_rgb")
+        try:
+            color = tuple(int(channel) for channel in color)
+        except (TypeError, ValueError):
+            color = (0, 255, 0)
+        if len(color) != 3:
+            color = (0, 255, 0)
+        view = highlighted[region_y1:region_y2, region_x1:region_x2]
+        view[local_mask] = color
+        return highlighted
+
+    def _draw_preview_legend(self, image_rgb, regions=None):
+        details = self.preview_details
+        if not isinstance(details, dict):
+            return image_rgb
+        colors = details.get("class_colors_rgb", {})
+        configuration = self.scan_profile.matching_configuration()
+        classes = []
+        for profile_class in configuration.get("classes", ()):
+            color = colors.get(profile_class.get("name"))
+            if color is None:
+                continue
+            configured = dict(profile_class)
+            configured["display_color_rgb"] = color
+            classes.append(configured)
+        return region_classifier.draw_class_legend(
+            image_rgb,
+            classes,
+            self.preview_regions if regions is None else regions,
+            self.PREVIEW_LEGEND_POSITION,
+        )
+
+    def _update_preview_region_controls(self):
+        region_count = len(self.preview_regions)
+        if not region_count:
+            self.preview_region_index = None
+            self.preview_region_position_var.set("Good regions: 0")
+            self.preview_region_stats_var.set("No accepted regions were found.")
+            self.previous_region_button.state(["disabled"])
+            self.next_region_button.state(["disabled"])
+            self.preview_show_all_check.state(["disabled"])
+            return
+        if self.preview_region_index is None:
+            self.preview_region_index = 0
+        self.preview_region_index %= region_count
+        self.preview_region_position_var.set(
+            f"Region {self.preview_region_index + 1} / {region_count}"
+        )
+        navigation_state = ["!disabled"] if region_count > 1 else ["disabled"]
+        self.previous_region_button.state(navigation_state)
+        self.next_region_button.state(navigation_state)
+        self.preview_show_all_check.state(["!disabled"])
+        self.preview_region_stats_var.set(
+            self._format_preview_region_stats(self._selected_preview_region())
+        )
+
+    @classmethod
+    def _format_preview_region_stats(cls, region):
+        if not region:
+            return "No accepted region is selected."
+        class_name = region.get("matched_class") or "Unclassified"
+        group = region.get("matched_group")
+        heading = f"Class: {class_name}"
+        if group:
+            heading += f"  |  Group: {group}"
+        return "\n".join((
+            heading,
+            f"Area: {cls._format_measurement(region.get('area_um2'), 'µm²')}"
+            f"  |  Size: {cls._format_measurement(region.get('size_um'), 'µm')}",
+            f"Width: {cls._format_measurement(region.get('width_um'), 'µm')}"
+            f"  |  Height: {cls._format_measurement(region.get('height_um'), 'µm')}",
+            f"Perimeter: {cls._format_measurement(region.get('perimeter_um'), 'µm')}"
+            "  |  P:A: "
+            f"{cls._format_measurement(region.get('perimeter_area_ratio_per_um'), '1/µm')}",
+        ))
+
+    @staticmethod
+    def _format_measurement(value, unit):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "—"
+        if not math.isfinite(number):
+            return "—"
+        return f"{number:,.3f} {unit}"
 
     def save_profile(self):
         if self.class_edit_active:
             self._show_confirm_current_message()
             return
         try:
-            self.scan_profile.set_size_requirement(*self._get_profile_size_requirement())
             profile = self.scan_profile.save_profile(self.profile_name_var.get())
         except FileExistsError as exc:
             if not messagebox.askyesno(
@@ -930,6 +1400,9 @@ class ScanProfilePanel:
             return
         if not self.class_edit_active:
             self._show_create_or_edit_item_prompt()
+            return
+        if self.editor_kind == "filter":
+            self.status_var.set("Geometry filters are configured with their bound fields.")
             return
         if self._classification_type() == CLASSIFICATION_RANGE:
             self.status_var.set(
@@ -981,12 +1454,17 @@ class ScanProfilePanel:
         if selected is None:
             return
         self.pending_new_class = False
-        kind, index = selected
+        self.pending_new_filter = False
+        kind, item_key = selected
         self.selected_item = selected
         self.editor_kind = kind
         self.editing_class_index = None
+        self.editing_filter_id = None
         self._set_item_editing_enabled(False)
-        self._load_class_into_editor(index)
+        if kind == "class":
+            self._load_class_into_editor(item_key)
+        else:
+            self._load_filter_into_editor(item_key)
         self._show_editor_options(kind)
         self.status_var.set(
             f"Selected {self.class_name_var.get()}. Click Edit selected to modify it."
@@ -1004,12 +1482,6 @@ class ScanProfilePanel:
         self.classification_type_var.set(
             self.CLASSIFICATION_LABELS[classification_type]
         )
-        self.minimum_size_var.set(
-            "" if item["minimum_size_um"] is None else f"{item['minimum_size_um']:g}"
-        )
-        self.maximum_size_var.set(
-            "" if item["maximum_size_um"] is None else f"{item['maximum_size_um']:g}"
-        )
         if classification_type == CLASSIFICATION_RANGE:
             self._set_range_values(
                 item["minimum_contrast_rgb"],
@@ -1024,6 +1496,24 @@ class ScanProfilePanel:
             self.threshold_var.set(str(item["threshold"]))
             self._set_range_values(None, None)
             self._load_region_reference(item)
+
+    def _load_filter_into_editor(self, filter_id):
+        item = self.scan_profile.get_filter(filter_id)
+        filter_type = item["type"]
+        self.class_name_var.set(item["name"])
+        self.filter_type_var.set(self.FILTER_TYPE_LABELS[filter_type])
+        self.filter_enabled_var.set(
+            bool(item.get("enabled", False))
+            if filter_type != FILTER_TYPE_NEURAL_NETWORK
+            else False
+        )
+        self._set_filter_bounds(item)
+        self._clear_pending_image()
+        state = "enabled" if self.filter_enabled_var.get() else "disabled"
+        self.app.display_image_message(
+            f"{item['name']} is a {self.FILTER_TYPE_LABELS[filter_type]} filter "
+            f"and is currently {state}."
+        )
 
     def _load_region_reference(self, item):
         self.current_source_path = item["source_path"]
@@ -1043,9 +1533,13 @@ class ScanProfilePanel:
 
     def _show_editor_options(self, kind):
         self.class_options.pack_forget()
+        self.filter_options.pack_forget()
+        self.size_filter_options.pack_forget()
+        self.bounding_box_filter_options.pack_forget()
+        self.ratio_filter_options.pack_forget()
+        self.neural_filter_options.pack_forget()
         self.region_options.pack_forget()
         self.range_options.pack_forget()
-        self.class_size_options.pack_forget()
         self.contrast_label.pack_forget()
         self.confirm_item_button.pack_forget()
         if kind is None:
@@ -1056,17 +1550,50 @@ class ScanProfilePanel:
         if not self.editor_heading.winfo_manager():
             self.editor_heading.pack(anchor="w", pady=(9, 0), before=self.preview_heading)
             self.editor.pack(fill="x", pady=(4, 0), before=self.preview_heading)
-        self.editor_title_var.set("Class")
-        self.class_options.pack(fill="x")
-        if self._classification_type() == CLASSIFICATION_RANGE:
-            self.range_options.pack(fill="x")
+        self.editor_title_var.set("Class" if kind == "class" else "Filter")
+        if kind == "filter":
+            self.filter_options.pack(fill="x")
+            self._show_filter_type_options()
+            self.confirm_item_button.configure(text="Confirm filter")
         else:
-            self.region_options.pack(fill="x")
-        self.class_size_options.pack(fill="x", pady=(5, 0))
-        if self._classification_type() == CLASSIFICATION_SAMPLE:
-            self.contrast_label.pack(anchor="w", pady=(5, 0))
-        self.confirm_item_button.configure(text="Confirm class")
+            self.class_options.pack(fill="x")
+            if self._classification_type() == CLASSIFICATION_RANGE:
+                self.range_options.pack(fill="x")
+            else:
+                self.region_options.pack(fill="x")
+                self.contrast_label.pack(anchor="w", pady=(5, 0))
+            self.confirm_item_button.configure(text="Confirm class")
         self.confirm_item_button.pack(pady=(5, 0))
+        self._schedule_footer_resize()
+
+    def _show_filter_type_options(self):
+        self.size_filter_options.pack_forget()
+        self.bounding_box_filter_options.pack_forget()
+        self.ratio_filter_options.pack_forget()
+        self.neural_filter_options.pack_forget()
+        filter_type = self._selected_filter_type()
+        if filter_type == FILTER_TYPE_SIZE:
+            self.size_filter_options.pack(fill="x")
+        elif filter_type == FILTER_TYPE_BOUNDING_BOX:
+            self.bounding_box_filter_options.pack(fill="x")
+        elif filter_type == FILTER_TYPE_PERIMETER_AREA_RATIO:
+            self.ratio_filter_options.pack(fill="x")
+        else:
+            self.filter_enabled_var.set(False)
+            self.neural_filter_options.pack(fill="x")
+        self._apply_filter_editing_state()
+
+    def _on_filter_type_changed(self, event=None):
+        if self.editor_kind != "filter":
+            return
+        self._show_filter_type_options()
+        if self.pending_new_filter:
+            self._refresh_item_list(select_pending=True)
+        self.status_var.set(
+            "Neural network filtering is coming soon."
+            if self._selected_filter_type() == FILTER_TYPE_NEURAL_NETWORK
+            else "Enter inclusive lower and upper bounds; either bound may be blank."
+        )
         self._schedule_footer_resize()
 
     def _set_editing_enabled(self, enabled):
@@ -1078,10 +1605,22 @@ class ScanProfilePanel:
         self.class_edit_active = bool(enabled)
         for widget in self.item_edit_widgets:
             widget.state(["!disabled"] if enabled else ["disabled"])
+        self._apply_filter_editing_state()
+
+    def _apply_filter_editing_state(self):
+        if not hasattr(self, "filter_enabled_check"):
+            return
+        neural = self._selected_filter_type() == FILTER_TYPE_NEURAL_NETWORK
+        if neural:
+            self.filter_enabled_var.set(False)
+        can_toggle = self.class_edit_active and self.editor_kind == "filter" and not neural
+        self.filter_enabled_check.state(
+            ["!disabled"] if can_toggle else ["disabled"]
+        )
 
     def _refresh_item_list(
         self,
-        select_item: tuple[str, int] | None = None,
+        select_item: tuple[str, object] | None = None,
         *,
         select_pending=False,
     ):
@@ -1092,6 +1631,9 @@ class ScanProfilePanel:
             for index, profile_class in enumerate(self.scan_profile.classes):
                 self.class_list.insert(tk.END, self._class_list_text(profile_class))
                 self._display_items.append(("class", index))
+            for profile_filter in self.scan_profile.filters:
+                self.class_list.insert(tk.END, self._filter_list_text(profile_filter))
+                self._display_items.append(("filter", profile_filter["id"]))
             if self.pending_new_class:
                 tags = self._class_tags(
                     self._classification_type(),
@@ -1101,9 +1643,20 @@ class ScanProfilePanel:
                     tk.END,
                     f"{tags} {self.class_name_var.get()}",
                 )
+            elif self.pending_new_filter:
+                state = "ON" if self.filter_enabled_var.get() else "OFF"
+                self.class_list.insert(
+                    tk.END,
+                    f"[F][{state}] {self.class_name_var.get()} - "
+                    f"{self.filter_type_var.get()}",
+                )
             class_count = len(self.scan_profile.classes)
-            pending_count = int(self.pending_new_class)
-            self.item_count_var.set(f"Classes: {class_count + pending_count}")
+            filter_count = len(self.scan_profile.filters)
+            pending_count = int(self.pending_new_class or self.pending_new_filter)
+            self.item_count_var.set(
+                f"Items: {class_count + filter_count + pending_count} "
+                f"({class_count} classes, {filter_count} filters)"
+            )
             self.class_group_combo.configure(values=self.scan_profile.groups)
             if select_item is not None:
                 try:
@@ -1113,7 +1666,7 @@ class ScanProfilePanel:
                 else:
                     self.class_list.selection_set(list_index)
                     self.class_list.activate(list_index)
-            elif select_pending and self.pending_new_class:
+            elif select_pending and (self.pending_new_class or self.pending_new_filter):
                 list_index = len(self._display_items)
                 self.class_list.selection_set(list_index)
                 self.class_list.activate(list_index)
@@ -1134,6 +1687,15 @@ class ScanProfilePanel:
         type_tag = "[R]" if classification_type == CLASSIFICATION_RANGE else "[S]"
         return f"{type_tag}[I]" if identify else type_tag
 
+    @classmethod
+    def _filter_list_text(cls, profile_filter):
+        state = "ON" if profile_filter.get("enabled", False) else "OFF"
+        label = cls.FILTER_TYPE_LABELS.get(
+            profile_filter.get("type"),
+            str(profile_filter.get("type", "Unknown")),
+        )
+        return f"[F][{state}] {profile_filter['name']} - {label}"
+
     def _selected_list_item(self):
         selection = self.class_list.curselection()
         if not selection:
@@ -1146,12 +1708,12 @@ class ScanProfilePanel:
     def _on_item_name_changed(self, *_):
         if self._updating_item_list or not self.class_edit_active:
             return
-        if self.pending_new_class:
+        if self.pending_new_class or self.pending_new_filter:
             self._refresh_item_list(select_pending=True)
 
     def _start_class_drag(self, event):
         self.drag_class_index = None
-        if self.class_edit_active or self.pending_new_class:
+        if self.class_edit_active or self.pending_new_class or self.pending_new_filter:
             return
         list_index = self.class_list.nearest(event.y)
         if not 0 <= list_index < len(self._display_items):
@@ -1174,6 +1736,7 @@ class ScanProfilePanel:
         if target_index == self.drag_class_index:
             return "break"
         profile_class = self.scan_profile.move_class(self.drag_class_index, target_index)
+        self._clear_preview_analysis()
         self.drag_class_index = target_index
         self._refresh_item_list(select_item=("class", target_index))
         self.status_var.set(f"Moved {profile_class['name']} to position {target_index + 1}.")
@@ -1192,6 +1755,85 @@ class ScanProfilePanel:
         if not 0 <= threshold <= 255:
             raise ScanProfileError("Color tolerance must be between 0 and 255.")
         return threshold
+
+    def _selected_filter_type(self):
+        return self.FILTER_LABEL_TO_TYPE.get(
+            self.filter_type_var.get(),
+            FILTER_TYPE_SIZE,
+        )
+
+    def _set_filter_bounds(self, profile_filter):
+        for key, variable in self.filter_bound_vars.items():
+            value = profile_filter.get(key) if profile_filter is not None else None
+            variable.set("" if value is None else f"{float(value):g}")
+
+    def _get_filter_bounds(self, filter_type):
+        keys = {
+            FILTER_TYPE_SIZE: ("minimum_um", "maximum_um"),
+            FILTER_TYPE_BOUNDING_BOX: (
+                "minimum_width_um",
+                "maximum_width_um",
+                "minimum_height_um",
+                "maximum_height_um",
+            ),
+            FILTER_TYPE_PERIMETER_AREA_RATIO: (
+                "minimum_per_um",
+                "maximum_per_um",
+            ),
+            FILTER_TYPE_NEURAL_NETWORK: (),
+        }[filter_type]
+        bounds = {}
+        for key in keys:
+            raw_value = self.filter_bound_vars[key].get().strip()
+            if not raw_value:
+                bounds[key] = None
+                continue
+            try:
+                value = float(raw_value)
+            except ValueError as exc:
+                raise ScanProfileError(
+                    f"{self._filter_bound_label(key)} must be a number."
+                ) from exc
+            if not math.isfinite(value) or value < 0:
+                raise ScanProfileError(
+                    f"{self._filter_bound_label(key)} must be zero or greater."
+                )
+            bounds[key] = value
+        for minimum_key, maximum_key in self._filter_bound_pairs(filter_type):
+            minimum = bounds[minimum_key]
+            maximum = bounds[maximum_key]
+            if minimum is not None and maximum is not None and minimum > maximum:
+                raise ScanProfileError(
+                    f"{self._filter_bound_label(minimum_key)} cannot exceed "
+                    f"{self._filter_bound_label(maximum_key).lower()}."
+                )
+        return bounds
+
+    @staticmethod
+    def _filter_bound_pairs(filter_type):
+        if filter_type == FILTER_TYPE_SIZE:
+            return (("minimum_um", "maximum_um"),)
+        if filter_type == FILTER_TYPE_BOUNDING_BOX:
+            return (
+                ("minimum_width_um", "maximum_width_um"),
+                ("minimum_height_um", "maximum_height_um"),
+            )
+        if filter_type == FILTER_TYPE_PERIMETER_AREA_RATIO:
+            return (("minimum_per_um", "maximum_per_um"),)
+        return ()
+
+    @staticmethod
+    def _filter_bound_label(key):
+        return {
+            "minimum_um": "Minimum size",
+            "maximum_um": "Maximum size",
+            "minimum_width_um": "Minimum width",
+            "maximum_width_um": "Maximum width",
+            "minimum_height_um": "Minimum height",
+            "maximum_height_um": "Maximum height",
+            "minimum_per_um": "Minimum perimeter / area",
+            "maximum_per_um": "Maximum perimeter / area",
+        }[key]
 
     def _classification_type(self):
         return self.CLASSIFICATION_VALUES.get(
@@ -1277,53 +1919,21 @@ class ScanProfilePanel:
             for index, variable in enumerate(variables):
                 variable.set("" if values is None else str(values[index]))
 
-    def _get_class_size_requirement(self):
-        return self._parse_size_requirement(
-            self.minimum_size_var.get(),
-            self.maximum_size_var.get(),
-            "Class",
-        )
-
-    def _get_profile_size_requirement(self):
-        return self._parse_size_requirement(
-            self.profile_minimum_size_var.get(),
-            self.profile_maximum_size_var.get(),
-            "Profile",
-        )
-
-    def _parse_size_requirement(self, minimum_text, maximum_text, scope):
-        values = []
-        for label, raw_value in (
-            (f"{scope} minimum size", minimum_text.strip()),
-            (f"{scope} maximum size", maximum_text.strip()),
-        ):
-            if not raw_value:
-                values.append(None)
-                continue
-            try:
-                values.append(float(raw_value))
-            except ValueError as exc:
-                raise ScanProfileError(f"{label} must be a number of micrometers.") from exc
-        return self.scan_profile.validate_size_requirement(*values)
-
     def _preview_pixel_size(self):
         magnification = str(self.app.get_magnification()).upper()
         resolution = self.app.get_resolution()
         try:
             return float(PIXEL_SIZE[magnification][resolution])
         except (KeyError, TypeError, ValueError) as exc:
-            has_size_limits = (
-                self.scan_profile.minimum_size_um is not None
-                or self.scan_profile.maximum_size_um is not None
-                or any(
-                    item["minimum_size_um"] is not None
-                    or item["maximum_size_um"] is not None
-                    for item in self.scan_profile.classes
-                )
+            requires_calibration = any(
+                item.get("enabled", False)
+                and item.get("type") != FILTER_TYPE_NEURAL_NETWORK
+                for item in self.scan_profile.filters
             )
-            if has_size_limits:
+            if requires_calibration:
                 raise ScanProfileError(
-                    "The current magnification and resolution do not provide a preview pixel size."
+                    "The current magnification and resolution do not provide the "
+                    "pixel calibration required by enabled filters."
                 ) from exc
             return None
 
@@ -1371,12 +1981,21 @@ class ScanProfilePanel:
             number += 1
         return f"Class {number}"
 
+    def _next_default_filter_name(self):
+        existing = {item["name"].casefold() for item in self.scan_profile.filters}
+        number = len(self.scan_profile.filters) + 1
+        while f"filter {number}".casefold() in existing:
+            number += 1
+        return f"Filter {number}"
+
     def _reset_editor(self, clear_image=True):
         self.class_edit_active = False
         self.editor_kind = None
         self.selected_item = None
         self.editing_class_index = None
+        self.editing_filter_id = None
         self.pending_new_class = False
+        self.pending_new_filter = False
         self.class_name_var.set("")
         self.class_group_var.set("")
         self.identify_var.set(True)
@@ -1384,8 +2003,9 @@ class ScanProfilePanel:
             self.CLASSIFICATION_LABELS[CLASSIFICATION_SAMPLE]
         )
         self._set_range_values(None, None)
-        self.minimum_size_var.set("")
-        self.maximum_size_var.set("")
+        self.filter_type_var.set(self.FILTER_TYPE_LABELS[FILTER_TYPE_SIZE])
+        self.filter_enabled_var.set(True)
+        self._set_filter_bounds(None)
         self.threshold_var.set(str(self.DEFAULT_FLOOD_FILL_TOLERANCE))
         self._set_item_editing_enabled(False)
         self._show_editor_options(None)
@@ -1395,11 +2015,26 @@ class ScanProfilePanel:
     def _reset_preview(self):
         self.preview_source_path = None
         self.preview_image_bgr = None
+        self._clear_preview_analysis()
+
+    def _clear_preview_analysis(self):
         self.preview_result_rgb = None
+        self.preview_details = None
+        self.preview_regions = []
+        self.preview_region_index = None
         self.preview_enabled_var.set(False)
+        self.preview_show_all_var.set(False)
         self.preview_time_var.set("Preview time: —")
+        self.preview_region_position_var.set("Good regions: —")
+        self.preview_region_stats_var.set(
+            "Run the profile to inspect accepted regions."
+        )
         if hasattr(self, "preview_toggle"):
             self.preview_toggle.state(["disabled"])
+        if hasattr(self, "previous_region_button"):
+            self.previous_region_button.state(["disabled"])
+            self.next_region_button.state(["disabled"])
+            self.preview_show_all_check.state(["disabled"])
 
     def _clear_list_selection(self):
         self.class_list.selection_clear(0, tk.END)

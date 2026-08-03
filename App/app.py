@@ -34,8 +34,9 @@ from Imaging.frame_processing import FrameProcessor
 from Imaging.focus import FocusController
 from Imaging.flatfield_storage import (
     DEFAULT_VIGNETTE_SUBSTRATE,
-    VIGNETTE_SUBSTRATES,
+    VIGNETTE_SUBSTRATE_LABELS,
     normalize_vignette_substrate,
+    vignette_substrate_label,
 )
 
 DLL_PATH = os.getcwd() + r"\Hardware\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
@@ -101,7 +102,7 @@ class App:
         self.resolution = "HIGH"
         self.vignette_substrate = DEFAULT_VIGNETTE_SUBSTRATE
         self.vignette_substrate_var = tk.StringVar(
-            value=self.vignette_substrate
+            value=vignette_substrate_label(self.vignette_substrate)
         )
 
         self.buttons = []
@@ -196,7 +197,7 @@ class App:
             chip_filter_callback=lambda: self.set_view("Camera View"),
             vignette_filter_callback=self.toggle_camera_vignette_filter,
             vignette_substrate_var=self.vignette_substrate_var,
-            vignette_substrates=VIGNETTE_SUBSTRATES,
+            vignette_substrates=VIGNETTE_SUBSTRATE_LABELS,
             vignette_substrate_callback=self.set_vignette_substrate,
             operation_allowed=self.hardware_controls_available,
         )
@@ -980,8 +981,9 @@ class App:
             self.frame_processor.clear_vignette_filter_cache()
 
     def _sync_vignette_substrate_var(self, substrate):
-        if self.vignette_substrate_var.get() != substrate:
-            self.vignette_substrate_var.set(substrate)
+        label = vignette_substrate_label(substrate)
+        if self.vignette_substrate_var.get() != label:
+            self.vignette_substrate_var.set(label)
 
     def get_true_map(self):
         return self.true_map

@@ -148,7 +148,7 @@ class ScanStageRestoreTests(unittest.TestCase):
         completed = manager.run_scan(
             "Vignette Filter",
             window=(2, 3),
-            vignette_substrate="285nm_8in",
+            vignette_substrate="285nm (8in)",
         )
 
         self.assertTrue(completed)

@@ -5,8 +5,7 @@ from tkinter import Frame, Label, filedialog, messagebox
 from tkinter import ttk
 
 from Imaging.flatfield_storage import (
-    DEFAULT_VIGNETTE_SUBSTRATE,
-    VIGNETTE_SUBSTRATES,
+    VIGNETTE_SUBSTRATE_LABELS,
 )
 from Scanning.scan_profile import PROFILE_FILENAME, ScanProfile, ScanProfileError
 
@@ -24,12 +23,12 @@ class ScanSetupPanel:
     FULL_SCAN_TYPES = {"Complete Scan (1 Chip)", "Full Stage Scan"}
     DETECTION_SCAN_TYPES = FULL_SCAN_TYPES | {"100x Scan"}
     MATERIALS = ("Gr", "hBN", "MoS2", "MoTe2", "WS2", "WSe2")
-    SUBSTRATE_THICKNESSES = VIGNETTE_SUBSTRATES
+    SUBSTRATE_THICKNESSES = VIGNETTE_SUBSTRATE_LABELS
     FULL_SCAN_MAGNIFICATIONS = ("10x", "20x")
     DETECTION_MODELS = ("Region Detection", "Flake Detection")
 
     DEFAULT_MATERIAL = "Gr"
-    DEFAULT_SUBSTRATE = DEFAULT_VIGNETTE_SUBSTRATE
+    DEFAULT_SUBSTRATE = VIGNETTE_SUBSTRATE_LABELS[0]
 
     def __init__(
         self,
@@ -60,7 +59,7 @@ class ScanSetupPanel:
         self.substrate_var = (
             get_vignette_substrate_var()
             if get_vignette_substrate_var is not None
-            else tk.StringVar(value=DEFAULT_VIGNETTE_SUBSTRATE)
+            else tk.StringVar(value=self.DEFAULT_SUBSTRATE)
         )
         self.vignette_substrate_var = self.substrate_var
         self.full_scan_magnification_var = tk.StringVar(
@@ -192,7 +191,7 @@ class ScanSetupPanel:
         self.vignette_substrate_dropdown = ttk.Combobox(
             self.vignette_substrate_controls,
             textvariable=self.vignette_substrate_var,
-            values=VIGNETTE_SUBSTRATES,
+            values=VIGNETTE_SUBSTRATE_LABELS,
             state="readonly",
             width=21,
             font=("TkDefaultFont", 8),
@@ -429,11 +428,11 @@ class ScanSetupPanel:
                 "detection_model": self.detection_model_var.get(),
                 "scan_profile": profile,
                 "display_class_legend": self.class_legend_var.get(),
+                "material": self.material_var.get(),
+                "substrate_thickness": self.substrate_var.get(),
             })
             if scan_type in self.FULL_SCAN_TYPES:
                 options.update({
-                    "material": self.material_var.get(),
-                    "substrate_thickness": self.substrate_var.get(),
                     "full_scan_magnification": self.full_scan_magnification_var.get(),
                 })
         else:

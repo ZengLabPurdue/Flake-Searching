@@ -15,13 +15,43 @@ from .contour_extractor import get_region_from_point
 
 
 PROFILE_SCHEMA = "flake-search.scan-search-profile"
-PROFILE_VERSION = 6
-SUPPORTED_PROFILE_VERSIONS = {1, 2, 3, 4, 5, PROFILE_VERSION}
+PROFILE_VERSION = 7
+SUPPORTED_PROFILE_VERSIONS = {1, 2, 3, 4, 5, 6, PROFILE_VERSION}
 PROFILE_FILENAME = "profile.json"
 DEFAULT_PROFILES_DIR = HOME_DIR / "Profiles"
 CLASSIFICATION_SAMPLE = "sample"
 CLASSIFICATION_RANGE = "range"
 CLASSIFICATION_TYPES = {CLASSIFICATION_SAMPLE, CLASSIFICATION_RANGE}
+FILTER_TYPE_SIZE = "size"
+FILTER_TYPE_BOUNDING_BOX = "bounding_box"
+FILTER_TYPE_PERIMETER_AREA_RATIO = "perimeter_area_ratio"
+FILTER_TYPE_NEURAL_NETWORK = "neural_network"
+FILTER_TYPES = {
+    FILTER_TYPE_SIZE,
+    FILTER_TYPE_BOUNDING_BOX,
+    FILTER_TYPE_PERIMETER_AREA_RATIO,
+    FILTER_TYPE_NEURAL_NETWORK,
+}
+FILTER_TYPE_LABELS = {
+    FILTER_TYPE_SIZE: "Size",
+    FILTER_TYPE_BOUNDING_BOX: "Width and height",
+    FILTER_TYPE_PERIMETER_AREA_RATIO: "Perimeter / area",
+    FILTER_TYPE_NEURAL_NETWORK: "Neural network (coming soon)",
+}
+FILTER_BOUND_KEYS = {
+    FILTER_TYPE_SIZE: ("minimum_um", "maximum_um"),
+    FILTER_TYPE_BOUNDING_BOX: (
+        "minimum_width_um",
+        "maximum_width_um",
+        "minimum_height_um",
+        "maximum_height_um",
+    ),
+    FILTER_TYPE_PERIMETER_AREA_RATIO: (
+        "minimum_per_um",
+        "maximum_per_um",
+    ),
+    FILTER_TYPE_NEURAL_NETWORK: (),
+}
 ScanProfileError = ValueError
 
 def _profile_slug(name):
@@ -88,9 +118,8 @@ class ScanProfile:
         self.path = None
         self.created_at = ""
         self.updated_at = ""
-        self.minimum_size_um = None
-        self.maximum_size_um = None
         self.classes = []
+        self.filters = []
 
     def profile_directory(self, name):
         return self.profiles_dir / _profile_slug(name)
@@ -113,8 +142,6 @@ class ScanProfile:
         region_mask,
         seed_point,
         threshold,
-        minimum_size_um=None,
-        maximum_size_um=None,
         group="",
         identify=True,
         connectivity=8,
@@ -135,8 +162,6 @@ class ScanProfile:
             seed_point,
             threshold,
             connectivity,
-            minimum_size_um,
-            maximum_size_um,
             class_id=class_id,
             group=group,
             identify=identify,
@@ -156,8 +181,6 @@ class ScanProfile:
         name,
         minimum_contrast_rgb,
         maximum_contrast_rgb,
-        minimum_size_um=None,
-        maximum_size_um=None,
         group="",
         identify=True,
         index=None,
@@ -173,8 +196,6 @@ class ScanProfile:
             name,
             minimum_contrast_rgb,
             maximum_contrast_rgb,
-            minimum_size_um,
-            maximum_size_um,
             class_id=class_id,
             group=group,
             identify=identify,
@@ -189,12 +210,6 @@ class ScanProfile:
             self.classes[index] = profile_class
         return profile_class
 
-    def set_size_requirement(self, minimum=None, maximum=None):
-        minimum, maximum = self.validate_size_requirement(minimum, maximum)
-        self.minimum_size_um = minimum
-        self.maximum_size_um = maximum
-        return minimum, maximum
-
     def copy_class(self, index, name=None, *, source_profile_name=None):
         """Copy a class into this profile with a new identity and unique label."""
         source = self.get_class(index)
@@ -207,8 +222,79 @@ class ScanProfile:
         self.classes.append(copied)
         return copied
 
+    def get_filter(self, filter_id):
+        for profile_filter in self.filters:
+            if profile_filter["id"] == filter_id:
+                return profile_filter
+        raise ScanProfileError(f"Filter was not found: {filter_id}")
+
+    def set_filter(self, filter_id, name, filter_type, enabled, **bounds):
+        """Add or update one named profile-wide geometry filter."""
+        existing_index = None
+        if filter_id is not None:
+            existing_index = next(
+                (
+                    index
+                    for index, profile_filter in enumerate(self.filters)
+                    if profile_filter["id"] == filter_id
+                ),
+                None,
+            )
+            if existing_index is None:
+                raise ScanProfileError(f"Filter was not found: {filter_id}")
+        profile_filter = self._make_filter(
+            name,
+            filter_type,
+            enabled,
+            filter_id=filter_id,
+            **bounds,
+        )
+        duplicate_name = next(
+            (
+                index
+                for index, item in enumerate(self.filters)
+                if item["name"].casefold() == profile_filter["name"].casefold()
+            ),
+            None,
+        )
+        if duplicate_name is not None and duplicate_name != existing_index:
+            raise ScanProfileError(
+                f"A filter named '{profile_filter['name']}' already exists."
+            )
+        if existing_index is None:
+            self.filters.append(profile_filter)
+        else:
+            self.filters[existing_index] = profile_filter
+        return profile_filter
+
+    def copy_filter(self, filter_id, name=None):
+        source = self.get_filter(filter_id)
+        copied_name = self._unique_filter_name(name or f"{source['name']} copy")
+        copied = self._make_filter(
+            copied_name,
+            source["type"],
+            source["enabled"],
+            **{
+                key: source.get(key)
+                for key in FILTER_BOUND_KEYS[source["type"]]
+            },
+        )
+        self.filters.append(copied)
+        return copied
+
+    def remove_filter(self, filter_id):
+        for index, profile_filter in enumerate(self.filters):
+            if profile_filter["id"] == filter_id:
+                return self.filters.pop(index)
+        raise ScanProfileError(f"Filter was not found: {filter_id}")
+
+    def move_filter(self, old_index, new_index):
+        profile_filter = self.filters.pop(old_index)
+        self.filters.insert(new_index, profile_filter)
+        return profile_filter
+
     def extend_from_profile(self, source_profile):
-        """Append independent copies of every class in another profile."""
+        """Append independent copies of another profile's classes and filters."""
         added = []
         for source in source_profile.classes:
             copied_name = self._unique_class_name(source["name"])
@@ -219,6 +305,17 @@ class ScanProfile:
             copied = self._copy_class_record(source, copied_name, origin)
             self.classes.append(copied)
             added.append(copied)
+        for source in source_profile.filters:
+            copied = self._make_filter(
+                self._unique_filter_name(source["name"]),
+                source["type"],
+                source["enabled"],
+                **{
+                    key: source.get(key)
+                    for key in FILTER_BOUND_KEYS[source["type"]]
+                },
+            )
+            self.filters.append(copied)
         return added
 
     def matching_configuration(self, contrast_threshold=None):
@@ -232,8 +329,6 @@ class ScanProfile:
                 "class_index": class_index,
                 "group": profile_class["group"],
                 "identify": profile_class["identify"],
-                "minimum_size_um": profile_class["minimum_size_um"],
-                "maximum_size_um": profile_class["maximum_size_um"],
             }
             if classification_type == CLASSIFICATION_RANGE:
                 configured_class.update({
@@ -260,11 +355,7 @@ class ScanProfile:
                     "tolerance": float(tolerance),
                 })
             classes.append(configured_class)
-        return {
-            "classes": classes,
-            "minimum_size_um": self.minimum_size_um,
-            "maximum_size_um": self.maximum_size_um,
-        }
+        return {"classes": classes, "filters": [dict(item) for item in self.filters]}
 
     @property
     def groups(self):
@@ -293,11 +384,14 @@ class ScanProfile:
             raise ScanProfileError("Class names must be unique.")
         for profile_class in self.classes:
             self._validate_class(profile_class)
-
-        profile_minimum, profile_maximum = self.validate_size_requirement(
-            self.minimum_size_um,
-            self.maximum_size_um,
-        )
+        for profile_filter in self.filters:
+            self._validate_filter(profile_filter)
+        filter_ids = [item["id"] for item in self.filters]
+        if len(filter_ids) != len(set(filter_ids)):
+            raise ScanProfileError("Filter IDs must be unique.")
+        filter_names = [item["name"].casefold() for item in self.filters]
+        if len(filter_names) != len(set(filter_names)):
+            raise ScanProfileError("Filter names must be unique.")
 
         destination = self.profile_directory(name)
         if destination.exists() and not overwrite:
@@ -309,19 +403,10 @@ class ScanProfile:
 
         for profile_class in self.classes:
             class_id = profile_class["id"]
-            minimum, maximum = self.validate_size_requirement(
-                profile_class["minimum_size_um"],
-                profile_class["maximum_size_um"],
-            )
             saved_class = {
                 "id": class_id,
                 "name": profile_class["name"],
                 "classification_type": profile_class["classification_type"],
-                "size_requirement": (
-                    {"minimum_size_um": minimum, "maximum_size_um": maximum}
-                    if minimum is not None or maximum is not None
-                    else None
-                ),
                 "group": profile_class["group"] or None,
                 "identify": profile_class["identify"],
             }
@@ -371,14 +456,7 @@ class ScanProfile:
             "name": name,
             "created_at": now,
             "updated_at": now,
-            "size_requirement": (
-                {
-                    "minimum_size_um": profile_minimum,
-                    "maximum_size_um": profile_maximum,
-                }
-                if profile_minimum is not None or profile_maximum is not None
-                else None
-            ),
+            "filters": [dict(item) for item in self.filters],
             "classes": saved_classes,
         }
         (destination / PROFILE_FILENAME).write_text(
@@ -401,7 +479,10 @@ class ScanProfile:
         if not isinstance(payload, dict) or payload.get("schema") != PROFILE_SCHEMA:
             raise ScanProfileError("This file is not a scan search profile.")
         profile_version = payload.get("version")
-        if profile_version not in SUPPORTED_PROFILE_VERSIONS:
+        if (
+            type(profile_version) is not int
+            or profile_version not in SUPPORTED_PROFILE_VERSIONS
+        ):
             raise ScanProfileError(f"Unsupported profile version: {payload.get('version')!r}.")
 
         name = payload.get("name")
@@ -414,7 +495,43 @@ class ScanProfile:
             raise ScanProfileError("The profile must contain at least one class.")
 
         profile_dir = profile_path.parent.resolve()
-        profile_size = self._read_size(payload.get("size_requirement"))
+        loaded_filters = []
+        if profile_version >= PROFILE_VERSION:
+            saved_filters = payload.get("filters", [])
+            if not isinstance(saved_filters, list):
+                raise ScanProfileError("The profile filter list must be an array.")
+            for index, saved_filter in enumerate(saved_filters, start=1):
+                if not isinstance(saved_filter, dict):
+                    raise ScanProfileError(f"Filter {index} must be a JSON object.")
+                filter_type = saved_filter.get("type")
+                if filter_type not in FILTER_TYPES:
+                    raise ScanProfileError(f"Filter {index} has an invalid type.")
+                self._validate_filter(saved_filter)
+                loaded_filters.append(self._make_filter(
+                    saved_filter.get("name"),
+                    filter_type,
+                    saved_filter.get("enabled"),
+                    filter_id=saved_filter.get("id"),
+                    **{
+                        key: saved_filter.get(key)
+                        for key in FILTER_BOUND_KEYS[filter_type]
+                    },
+                ))
+        else:
+            # Versions before 7 had profile/class size requirements and, in
+            # version 4, an unrelated generic ``filters`` field. Only the
+            # profile-wide size requirement has a faithful v7 equivalent.
+            legacy_minimum, legacy_maximum = self._read_legacy_size(
+                payload.get("size_requirement")
+            )
+            if legacy_minimum is not None or legacy_maximum is not None:
+                loaded_filters.append(self._make_filter(
+                    "Legacy size",
+                    FILTER_TYPE_SIZE,
+                    True,
+                    minimum_um=legacy_minimum,
+                    maximum_um=legacy_maximum,
+                ))
         loaded_classes = []
 
         for index, saved_class in enumerate(saved_classes, start=1):
@@ -424,11 +541,6 @@ class ScanProfile:
             class_name = saved_class.get("name")
             if not isinstance(class_name, str) or not class_name.strip():
                 raise ScanProfileError(f"Class {index} has no name.")
-            size = (
-                self._read_size(saved_class.get("size_requirement"))
-                if "size_requirement" in saved_class
-                else (profile_size if profile_version < 3 else (None, None))
-            )
             identify = saved_class.get("identify", True)
             classification_type = saved_class.get(
                 "classification_type",
@@ -451,8 +563,6 @@ class ScanProfile:
                     class_name,
                     minimum_rgb,
                     maximum_rgb,
-                    size[0],
-                    size[1],
                     class_id=saved_class.get("id"),
                     group=saved_class.get("group", ""),
                     identify=identify,
@@ -512,10 +622,8 @@ class ScanProfile:
                 seed_point,
                 threshold,
                 connectivity,
-                size[0],
-                size[1],
-                saved_class.get("id"),
-                contrast,
+                class_id=saved_class.get("id"),
+                contrast=contrast,
                 group=saved_class.get("group", ""),
                 identify=identify,
                 derived_from=saved_class.get("derived_from"),
@@ -524,29 +632,20 @@ class ScanProfile:
         class_names = [profile_class["name"].casefold() for profile_class in loaded_classes]
         if len(class_names) != len(set(class_names)):
             raise ScanProfileError("Class names must be unique.")
+        filter_ids = [item["id"] for item in loaded_filters]
+        filter_names = [item["name"].casefold() for item in loaded_filters]
+        if len(filter_ids) != len(set(filter_ids)):
+            raise ScanProfileError("Filter IDs must be unique.")
+        if len(filter_names) != len(set(filter_names)):
+            raise ScanProfileError("Filter names must be unique.")
 
         self.name = name.strip()
         self.path = profile_dir
         self.created_at = str(payload.get("created_at", ""))
         self.updated_at = str(payload.get("updated_at", ""))
-        self.minimum_size_um, self.maximum_size_um = profile_size
         self.classes = loaded_classes
+        self.filters = loaded_filters
         return self
-
-    def validate_size_requirement(self, minimum, maximum):
-        for label, value in (("Minimum size", minimum), ("Maximum size", maximum)):
-            if value is not None and (
-                isinstance(value, bool) or not isinstance(value, (int, float))
-            ):
-                raise ScanProfileError(f"{label} must be a number of micrometers.")
-            if value is not None and value <= 0:
-                raise ScanProfileError(f"{label} must be greater than zero.")
-        if minimum is not None and maximum is not None and minimum > maximum:
-            raise ScanProfileError("Minimum size cannot be greater than maximum size.")
-        return (
-            None if minimum is None else float(minimum),
-            None if maximum is None else float(maximum),
-        )
 
     def _make_class(
         self,
@@ -557,8 +656,6 @@ class ScanProfile:
         seed_point,
         threshold,
         connectivity,
-        minimum,
-        maximum,
         class_id=None,
         contrast=None,
         *,
@@ -566,7 +663,6 @@ class ScanProfile:
         identify=True,
         derived_from=None,
     ):
-        minimum, maximum = self.validate_size_requirement(minimum, maximum)
         if class_id is not None and (
             not isinstance(class_id, str) or not class_id.strip()
         ):
@@ -584,8 +680,6 @@ class ScanProfile:
             "seed_point": (int(seed_point[0]), int(seed_point[1])),
             "threshold": int(threshold),
             "connectivity": int(connectivity),
-            "minimum_size_um": minimum,
-            "maximum_size_um": maximum,
             "contrast_rgb": contrast,
             "minimum_contrast_rgb": None,
             "maximum_contrast_rgb": None,
@@ -623,15 +717,12 @@ class ScanProfile:
         name,
         minimum_contrast_rgb,
         maximum_contrast_rgb,
-        minimum,
-        maximum,
         class_id=None,
         *,
         group="",
         identify=True,
         derived_from=None,
     ):
-        minimum, maximum = self.validate_size_requirement(minimum, maximum)
         if class_id is not None and (
             not isinstance(class_id, str) or not class_id.strip()
         ):
@@ -658,8 +749,6 @@ class ScanProfile:
             "seed_point": None,
             "threshold": None,
             "connectivity": None,
-            "minimum_size_um": minimum,
-            "maximum_size_um": maximum,
             "contrast_rgb": None,
             "minimum_contrast_rgb": minimum_rgb,
             "maximum_contrast_rgb": maximum_rgb,
@@ -676,8 +765,6 @@ class ScanProfile:
                 copied_name,
                 source["minimum_contrast_rgb"],
                 source["maximum_contrast_rgb"],
-                source["minimum_size_um"],
-                source["maximum_size_um"],
                 group=source["group"],
                 identify=source["identify"],
                 derived_from=origin,
@@ -690,13 +777,110 @@ class ScanProfile:
             source["seed_point"],
             source["threshold"],
             source["connectivity"],
-            source["minimum_size_um"],
-            source["maximum_size_um"],
             contrast=source["contrast_rgb"],
             group=source["group"],
             identify=source["identify"],
             derived_from=origin,
         )
+
+    def _make_filter(
+        self,
+        name,
+        filter_type,
+        enabled,
+        filter_id=None,
+        **bounds,
+    ):
+        if not isinstance(name, str) or not name.strip():
+            raise ScanProfileError("Every filter must have a name.")
+        if filter_type not in FILTER_TYPES:
+            raise ScanProfileError(f"Unknown filter type: {filter_type!r}.")
+        enabled = self._validate_flag(enabled, "Filter enabled")
+        if filter_id is not None and (
+            not isinstance(filter_id, str) or not filter_id.strip()
+        ):
+            raise ScanProfileError("Filter ID must be non-empty text.")
+        expected_keys = FILTER_BOUND_KEYS[filter_type]
+        unknown_keys = set(bounds) - set(expected_keys)
+        if unknown_keys:
+            names = ", ".join(sorted(unknown_keys))
+            raise ScanProfileError(
+                f"Filter {name!r} has unsupported setting(s): {names}."
+            )
+        result = {
+            "id": filter_id or uuid4().hex,
+            "name": name.strip(),
+            "type": filter_type,
+            "enabled": enabled,
+        }
+        for key in expected_keys:
+            value = bounds.get(key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float, np.integer, np.floating))
+                or not np.isfinite(value)
+                or value < 0
+            ):
+                raise ScanProfileError(
+                    f"Filter {name!r} has an invalid {key} value."
+                )
+            result[key] = None if value is None else float(value)
+        for minimum_key, maximum_key in self._filter_bound_pairs(filter_type):
+            minimum = result[minimum_key]
+            maximum = result[maximum_key]
+            if minimum is not None and maximum is not None and minimum > maximum:
+                raise ScanProfileError(
+                    f"Filter {name!r} minimum cannot exceed its maximum."
+                )
+        if enabled and expected_keys and all(result[key] is None for key in expected_keys):
+            raise ScanProfileError(
+                f"Enabled filter {name!r} needs at least one limit."
+            )
+        return result
+
+    def _validate_filter(self, profile_filter):
+        if not isinstance(profile_filter, dict):
+            raise ScanProfileError("Every filter must be an object.")
+        filter_id = profile_filter.get("id")
+        if not isinstance(filter_id, str) or not filter_id.strip():
+            raise ScanProfileError("Every saved filter must have a non-empty ID.")
+        filter_type = profile_filter.get("type")
+        if filter_type not in FILTER_TYPES:
+            raise ScanProfileError(f"Unknown filter type: {filter_type!r}.")
+        allowed_keys = {
+            "id",
+            "name",
+            "type",
+            "enabled",
+            *FILTER_BOUND_KEYS[filter_type],
+        }
+        unknown_keys = set(profile_filter) - allowed_keys
+        if unknown_keys:
+            names = ", ".join(sorted(unknown_keys))
+            raise ScanProfileError(f"Filter has unsupported setting(s): {names}.")
+        self._make_filter(
+            profile_filter.get("name"),
+            filter_type,
+            profile_filter.get("enabled"),
+            filter_id=filter_id,
+            **{
+                key: profile_filter.get(key)
+                for key in FILTER_BOUND_KEYS[filter_type]
+            },
+        )
+
+    @staticmethod
+    def _filter_bound_pairs(filter_type):
+        if filter_type == FILTER_TYPE_SIZE:
+            return (("minimum_um", "maximum_um"),)
+        if filter_type == FILTER_TYPE_BOUNDING_BOX:
+            return (
+                ("minimum_width_um", "maximum_width_um"),
+                ("minimum_height_um", "maximum_height_um"),
+            )
+        if filter_type == FILTER_TYPE_PERIMETER_AREA_RATIO:
+            return (("minimum_per_um", "maximum_per_um"),)
+        return ()
 
     def _validate_class(self, profile_class):
         name = profile_class["name"]
@@ -801,15 +985,26 @@ class ScanProfile:
             )
         return region_mask
 
-    def _read_size(self, size):
+    def _read_legacy_size(self, size):
         if size is None:
             return None, None
         if not isinstance(size, dict):
             raise ScanProfileError("The profile size requirement must be an object or null.")
-        return self.validate_size_requirement(
-            size.get("minimum_size_um"),
-            size.get("maximum_size_um"),
-        )
+        result = []
+        for key in ("minimum_size_um", "maximum_size_um"):
+            value = size.get(key)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not np.isfinite(value)
+                or value < 0
+            ):
+                raise ScanProfileError(f"The profile has an invalid {key} value.")
+            result.append(None if value is None else float(value))
+        minimum, maximum = result
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise ScanProfileError("Legacy minimum size cannot exceed maximum size.")
+        return minimum, maximum
 
     def _unique_class_name(self, preferred_name):
         preferred_name = str(preferred_name).strip() or "Class"
@@ -817,6 +1012,16 @@ class ScanProfile:
             return preferred_name
         suffix = 2
         while self.find_class(f"{preferred_name} {suffix}") is not None:
+            suffix += 1
+        return f"{preferred_name} {suffix}"
+
+    def _unique_filter_name(self, preferred_name):
+        preferred_name = str(preferred_name).strip() or "Filter"
+        existing = {item["name"].casefold() for item in self.filters}
+        if preferred_name.casefold() not in existing:
+            return preferred_name
+        suffix = 2
+        while f"{preferred_name} {suffix}".casefold() in existing:
             suffix += 1
         return f"{preferred_name} {suffix}"
 
