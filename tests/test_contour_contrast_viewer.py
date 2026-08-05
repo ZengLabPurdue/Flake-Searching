@@ -50,6 +50,10 @@ class ContourContrastViewerTests(unittest.TestCase):
             volumes[0].get_edgecolors()[0],
             (0.2, 0.4, 0.6, contour_finder.RANGE_BOX_EDGE_ALPHA),
         ))
+        self.assertTrue(np.allclose(
+            volumes[0].get_linewidths(),
+            contour_finder.REFERENCE_VOLUME_LINE_WIDTH,
+        ))
 
     def test_profile_discovery_lists_profile_directories_in_name_order(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,6 +77,61 @@ class ContourContrastViewerTests(unittest.TestCase):
         self.assertEqual(
             [profile.parent.name for profile in profiles],
             ["alpha", "Zulu"],
+        )
+
+    def test_sample_reference_uses_constant_sphere_and_connected_label(self):
+        center = np.asarray((-20, -10, 0), dtype=float)
+        class_color = np.asarray((0.2, 0.4, 0.6), dtype=float)
+        configuration = {
+            "classes": [{
+                "name": "Thin",
+                "group": "Graphene",
+                "identify": True,
+                "classification_type": "sample",
+                "contrast_rgb": center,
+                "tolerance": 6,
+                "display_color_rgb": class_color,
+            }],
+        }
+
+        figure = contour_finder.plot_contour_contrasts_3d(
+            [],
+            profile_configuration=configuration,
+            display=False,
+        )
+        axis = figure.axes[0]
+        figure.canvas.draw()
+        spheres = [
+            collection
+            for collection in axis.collections
+            if isinstance(collection, Poly3DCollection)
+        ]
+
+        self.assertEqual(len(spheres), 1)
+        self.assertTrue(np.allclose(
+            spheres[0].get_facecolors()[0],
+            (*class_color, contour_finder.REFERENCE_SPHERE_ALPHA),
+        ))
+        self.assertTrue(np.allclose(
+            spheres[0].get_linewidths(),
+            contour_finder.REFERENCE_VOLUME_LINE_WIDTH,
+        ))
+        self.assertEqual(
+            [text.get_text() for text in axis.texts],
+            ["Graphene / Thin"],
+        )
+        self.assertNotIn("[", axis.texts[0].get_text())
+        self.assertEqual(len(axis.lines), 1)
+        line_x, line_y, line_z = axis.lines[0].get_data_3d()
+        line_start = np.asarray((line_x[0], line_y[0], line_z[0]))
+        line_end = np.asarray((line_x[1], line_y[1], line_z[1]))
+        self.assertAlmostEqual(
+            np.linalg.norm(line_start - center),
+            contour_finder.REFERENCE_SPHERE_RADIUS,
+        )
+        self.assertGreater(
+            np.linalg.norm(line_end - center),
+            contour_finder.REFERENCE_SPHERE_RADIUS,
         )
 
     def test_matched_regions_keep_normal_measured_color_markers(self):

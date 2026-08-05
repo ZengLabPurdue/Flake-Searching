@@ -50,6 +50,40 @@ DEFAULT_GR_PIXEL_SIZE_UM = float(PIXEL_SIZE["10X"]["HIGH"])
 RANGE_BOX_ALPHA = 0.20
 RANGE_BOX_EDGE_ALPHA = 0.70
 REGION_POINT_EDGE_WIDTH = 0.15
+REFERENCE_VOLUME_LINE_WIDTH = 0.5
+REFERENCE_SPHERE_ALPHA = 0.18
+REFERENCE_SPHERE_EDGE_ALPHA = 0.32
+REFERENCE_SPHERE_MIN_RADIUS = 0.5
+#REFERENCE_SPHERE_RADIUS = float(
+#   _app_region_classifier.DEFAULT_CONTRAST_MATCH_THRESHOLD
+#)
+REFERENCE_SPHERE_RADIUS = 15.0
+REFERENCE_LABEL_GAP_FRACTION = 0.20
+REFERENCE_LABEL_MIN_GAP = 8.0
+REFERENCE_CONNECTOR_WIDTH = 1.0
+REFERENCE_LABEL_DIRECTIONS = np.asarray(
+    (
+        (1, 1, 1),
+        (1, -1, 1),
+        (-1, 1, 1),
+        (-1, -1, 1),
+        (1, 1, -1),
+        (1, -1, -1),
+        (-1, 1, -1),
+        (-1, -1, -1),
+        (1, 0, 1),
+        (-1, 0, 1),
+        (0, 1, -1),
+        (0, -1, -1),
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ),
+    dtype=np.float64,
+)
 SUPPORTED_IMAGE_SUFFIXES = {
     ".bmp",
     ".jpeg",
@@ -100,15 +134,20 @@ def _region_category(region) -> str:
     return "unmatched"
 
 
-def _set_equal_contrast_limits(axis, contrast_sets) -> None:
+def _contrast_center_radius(contrast_sets) -> tuple[np.ndarray, float]:
     nonempty = [values for values in contrast_sets if len(values)]
     if not nonempty:
-        return
+        return np.zeros(3, dtype=np.float64), 5.0
     values = np.concatenate(nonempty, axis=0)
     minimum = np.min(values, axis=0)
     maximum = np.max(values, axis=0)
     center = (minimum + maximum) / 2.0
     radius = max(5.0, float(np.max(maximum - minimum)) / 2.0) * 1.08
+    return center, radius
+
+
+def _set_equal_contrast_limits(axis, contrast_sets) -> None:
+    center, radius = _contrast_center_radius(contrast_sets)
     axis.set_xlim(center[0] - radius, center[0] + radius)
     axis.set_ylim(center[1] - radius, center[1] + radius)
     axis.set_zlim(center[2] - radius, center[2] + radius)
@@ -145,10 +184,85 @@ def _plot_contrast_range_box(axis, minimum, maximum, color) -> np.ndarray:
         faces,
         facecolors=[(*color, RANGE_BOX_ALPHA)],
         edgecolors=[(*color, RANGE_BOX_EDGE_ALPHA)],
-        linewidths=1.0,
+        linewidths=REFERENCE_VOLUME_LINE_WIDTH,
     )
     axis.add_collection3d(volume)
     return corners
+
+
+def _plot_contrast_sphere(axis, center, radius, color):
+    """Draw a translucent class-colored sphere around a sampled reference."""
+    radius = max(float(radius), REFERENCE_SPHERE_MIN_RADIUS)
+    longitude = np.linspace(0.0, 2.0 * np.pi, 32)
+    latitude = np.linspace(0.0, np.pi, 18)
+    x = center[0] + radius * np.outer(np.cos(longitude), np.sin(latitude))
+    y = center[1] + radius * np.outer(np.sin(longitude), np.sin(latitude))
+    z = center[2] + radius * np.outer(np.ones_like(longitude), np.cos(latitude))
+    surface = axis.plot_surface(
+        x,
+        y,
+        z,
+        color=(*color, REFERENCE_SPHERE_ALPHA),
+        edgecolor=(*color, REFERENCE_SPHERE_EDGE_ALPHA),
+        linewidth=REFERENCE_VOLUME_LINE_WIDTH,
+        antialiased=True,
+        shade=False,
+    )
+    return surface, radius
+
+
+def _reference_label_placement(
+    index,
+    center,
+    boundary_radius,
+    all_annotations,
+    occupied_label_positions,
+    plot_center,
+    label_gap,
+):
+    """Choose a separated 3D label position and its surface connector point."""
+    radial = center - plot_center
+    radial_length = np.linalg.norm(radial)
+    radial = radial / radial_length if radial_length else radial
+    best_placement = None
+    best_score = -np.inf
+    direction_count = len(REFERENCE_LABEL_DIRECTIONS)
+    for direction_offset in range(direction_count):
+        direction = REFERENCE_LABEL_DIRECTIONS[
+            (index + direction_offset) % direction_count
+        ].copy()
+        direction /= np.linalg.norm(direction)
+        line_start = center + direction * boundary_radius
+        label_position = line_start + direction * label_gap
+        other_clearances = [
+            np.linalg.norm(label_position - other_center) - other_radius
+            for other_index, (other_center, other_radius, _, _) in enumerate(
+                all_annotations
+            )
+            if other_index != index
+        ]
+        sphere_clearance = min(other_clearances, default=label_gap)
+        label_clearance = min(
+            (
+                np.linalg.norm(label_position - occupied_position)
+                for occupied_position in occupied_label_positions
+            ),
+            default=label_gap * 2.0,
+        )
+        outward_alignment = (
+            float(np.dot(direction, radial))
+            if radial_length
+            else 0.0
+        )
+        score = (
+            sphere_clearance
+            + 0.35 * label_clearance
+            + 0.15 * label_gap * outward_alignment
+        )
+        if score > best_score:
+            best_score = score
+            best_placement = (direction, line_start, label_position)
+    return best_placement
 
 
 def plot_contour_contrasts_3d(
@@ -159,13 +273,14 @@ def plot_contour_contrasts_3d(
     save_path=None,
     annotate_references=True,
     benchmark_seconds=None,
+    reference_sphere_radius=REFERENCE_SPHERE_RADIUS,
 ):
     """Plot all classified regions in signed RGB-contrast space.
 
     Every region is a circle using its measured average RGB color, regardless
-    of whether it matched a class. Hollow diamonds mark sampled class
-    references, while translucent class-colored boxes show contrast range
-    classes.
+    of whether it matched a class. Translucent class-colored spheres surround
+    sampled class references, while translucent boxes show contrast ranges.
+    Every sampled reference uses the same contrast-match radius.
     """
     regions = list(region_results)
     configuration = profile_configuration or {"classes": []}
@@ -203,6 +318,7 @@ def plot_contour_contrasts_3d(
         color_seed=0,
     )
     reference_contrasts = []
+    reference_annotations = []
     for profile_class in profile_classes:
         if not profile_class.get("identify", True):
             continue
@@ -225,41 +341,25 @@ def plot_contour_contrasts_3d(
             )
             reference_contrasts.extend(corners)
             contrast = (minimum + maximum) / 2.0
-            axis.scatter(
-                [contrast[0]],
-                [contrast[1]],
-                [contrast[2]],
-                marker="s",
-                s=90,
-                facecolors="none",
-                edgecolors=[class_color],
-                linewidths=1.3,
-                depthshade=False,
-            )
-            annotation_tag = "[R][I]"
+            annotation_radius = float(np.linalg.norm((maximum - minimum) / 2.0))
         else:
             contrast = np.asarray(profile_class["contrast_rgb"], dtype=np.float64)
             reference_contrasts.append(contrast)
-            axis.scatter(
-                [contrast[0]],
-                [contrast[1]],
-                [contrast[2]],
-                marker="D",
-                s=115,
-                facecolors="none",
-                edgecolors=[class_color],
-                linewidths=1.5,
-                depthshade=False,
+            _, annotation_radius = _plot_contrast_sphere(
+                axis,
+                contrast,
+                reference_sphere_radius,
+                class_color,
             )
-            annotation_tag = "[S][I]"
         if annotate_references:
             group = profile_class.get("group")
-            label = f"{group} / {profile_class['name']}" if group else profile_class["name"]
-            axis.text(
-                contrast[0],
-                contrast[1],
-                contrast[2],
-                f"  {annotation_tag} {label}",
+            label = (
+                f"{group} / {profile_class['name']}"
+                if group
+                else profile_class["name"]
+            )
+            reference_annotations.append(
+                (contrast, annotation_radius, label, class_color)
             )
 
     axis.scatter(
@@ -277,7 +377,51 @@ def plot_contour_contrasts_3d(
         if reference_contrasts
         else np.empty((0, 3), dtype=np.float64)
     )
-    _set_equal_contrast_limits(axis, (contrasts, reference_array, np.zeros((1, 3))))
+    base_contrast_sets = (contrasts, reference_array, np.zeros((1, 3)))
+    plot_center, plot_radius = _contrast_center_radius(base_contrast_sets)
+    label_gap = max(
+        REFERENCE_LABEL_MIN_GAP,
+        plot_radius * REFERENCE_LABEL_GAP_FRACTION,
+    )
+    label_positions = []
+    for index, (center, boundary_radius, label, class_color) in enumerate(
+        reference_annotations
+    ):
+        direction, line_start, label_position = _reference_label_placement(
+            index,
+            center,
+            boundary_radius,
+            reference_annotations,
+            label_positions,
+            plot_center,
+            label_gap,
+        )
+        axis.plot(
+            [line_start[0], label_position[0]],
+            [line_start[1], label_position[1]],
+            [line_start[2], label_position[2]],
+            color=class_color,
+            linewidth=REFERENCE_CONNECTOR_WIDTH,
+            alpha=0.9,
+        )
+        axis.text(
+            label_position[0],
+            label_position[1],
+            label_position[2],
+            label,
+            color=class_color,
+            fontsize=9,
+            fontweight="bold",
+            horizontalalignment="left" if direction[0] >= 0 else "right",
+            verticalalignment="center",
+        )
+        label_positions.append(label_position)
+    label_array = (
+        np.asarray(label_positions, dtype=np.float64).reshape(-1, 3)
+        if label_positions
+        else np.empty((0, 3), dtype=np.float64)
+    )
+    _set_equal_contrast_limits(axis, (*base_contrast_sets, label_array))
 
     counts = Counter(categories.tolist())
     axis.set_xlabel("Red contrast (region - background)")
@@ -320,7 +464,7 @@ def print_region_summary(region_results) -> None:
     print(f"Identified    : {counts['identified']:,}")
     print(f"Unmatched     : {counts['unmatched']:,}")
     for name, count in sorted(classes.items()):
-        print(f"  [C][I] {name}: {count:,}")
+        print(f"  {name}: {count:,}")
 
 
 def print_region_points(region_results) -> None:
@@ -385,6 +529,11 @@ def benchmark_and_plot(
         save_path=save_plot,
         annotate_references=annotate_references,
         benchmark_seconds=details["benchmark"]["wall_time_seconds"],
+        reference_sphere_radius=(
+            contrast_threshold
+            if contrast_threshold is not None
+            else REFERENCE_SPHERE_RADIUS
+        ),
     )
     return classified_image, contours, details, figure
 
