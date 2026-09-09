@@ -947,7 +947,7 @@ class ViewScansPanel:
         self._update_region_highlight(fit_image=True)
 
     def _update_region_highlight(self, fit_image=False):
-        """Render the full processed image with only the focus shape colored."""
+        """Render accepted flake masks in white on a black canvas."""
         viewer = getattr(self, "tile_viewer", None)
         if viewer is None:
             return
@@ -969,11 +969,13 @@ class ViewScansPanel:
         image_rgb = self._load_processed_region_image(processed_path)
         if image_rgb is None:
             return
-        if not show_everything:
-            record = self.current_regions[
-                self.view_region_index % len(self.current_regions)
-            ]
-            image_rgb = self._focused_region_image(image_rgb, record)
+        records = self.current_regions if show_everything else [
+            self.current_regions[self.view_region_index % len(self.current_regions)]
+        ]
+        binary_rgb = np.zeros_like(image_rgb)
+        for record in records:
+            self._paint_region_mask(binary_rgb, image_rgb, record)
+        image_rgb = binary_rgb
 
         view_state = None
         if not fit_image and hasattr(viewer, "capture_view_state"):
@@ -1027,7 +1029,12 @@ class ViewScansPanel:
 
     @classmethod
     def _focused_region_image(cls, image_rgb, record):
-        focused = np.full_like(image_rgb, 255)
+        focused = np.zeros_like(image_rgb)
+        return cls._paint_region_mask(focused, image_rgb, record)
+
+    @classmethod
+    def _paint_region_mask(cls, focused, image_rgb, record):
+        """Add an exact accepted mask, with class-color fallback for old scans."""
         if not isinstance(record, dict):
             return focused
         box = record.get("bounding_box_px")
@@ -1058,19 +1065,15 @@ class ViewScansPanel:
             color = record.get("display_color_rgb")
             try:
                 color = np.asarray(color, dtype=np.uint8).reshape(1, 1, 3)
+                # Black and white belong to the old preview background, not
+                # to a reliably recoverable class mask.
+                if np.all(color == 0) or np.all(color == 255):
+                    return focused
                 local_mask = np.all(source == color, axis=2)
             except (TypeError, ValueError):
-                local_mask = np.any(source < 250, axis=2)
+                return focused
         target = focused[y1:y2, x1:x2]
-        color = record.get("display_color_rgb")
-        try:
-            color = tuple(int(channel) for channel in color)
-        except (TypeError, ValueError):
-            color = None
-        if color is not None and len(color) == 3:
-            target[local_mask] = color
-        else:
-            target[local_mask] = source[local_mask]
+        target[local_mask] = 255
         return focused
 
     def save_selected_region_to_database(self):

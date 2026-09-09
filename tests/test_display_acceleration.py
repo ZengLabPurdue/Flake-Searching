@@ -585,7 +585,7 @@ class DisplayAccelerationTests(unittest.TestCase):
         self.assertEqual(panel.view_region_index, 0)
         self.assertEqual(panel.current_regions, [{"id": 3}])
 
-    def test_region_navigation_keeps_full_image_and_colors_only_focus_shape(self):
+    def test_region_navigation_shows_only_accepted_masks_white_on_black(self):
         loaded = []
         viewer = type(
             "_Viewer",
@@ -630,14 +630,46 @@ class DisplayAccelerationTests(unittest.TestCase):
         focused = loaded[-1][0]
         expected_mask = np.zeros((3, 4), dtype=bool)
         expected_mask.reshape(-1)[[0, 1, 5, 6, 10, 11]] = True
-        self.assertTrue(np.all(focused[4:7, 5:9][expected_mask] == (12, 34, 56)))
-        self.assertTrue(np.all(focused[4:7, 5:9][~expected_mask] == 255))
-        self.assertTrue(np.all(focused[:4] == 255))
+        expected = np.zeros_like(processed)
+        expected[4:7, 5:9][expected_mask] = 255
+        np.testing.assert_array_equal(focused, expected)
         self.assertIsNone(loaded[-1][1]["view_state"])
 
+        panel.current_regions.append({
+            "bounding_box_px": {"x": 1, "y": 1, "width": 2, "height": 1},
+            "region_mask": {
+                "encoding": "foreground-runs-row-major",
+                "width": 2, "height": 1, "runs": [0, 2],
+            },
+        })
         panel.display_everything_var.set(True)
         panel._update_region_highlight(fit_image=True)
-        self.assertTrue(np.array_equal(loaded[-1][0], processed))
+        expected[1, 1:3] = 255
+        np.testing.assert_array_equal(loaded[-1][0], expected)
+
+        panel.raw_result_var.set(True)
+        count = len(loaded)
+        panel._update_region_highlight(fit_image=True)
+        self.assertEqual(len(loaded), count)
+
+    def test_old_region_masks_recover_only_exact_class_color(self):
+        processed = np.full((5, 6, 3), 255, dtype=np.uint8)
+        processed[1, 2] = (12, 34, 56)
+        processed[2, 2] = 0
+        record = {
+            "bounding_box_px": {"x": 0, "y": 0, "width": 6, "height": 5},
+            "display_color_rgb": [12, 34, 56],
+        }
+        expected = np.zeros_like(processed)
+        expected[1, 2] = 255
+        np.testing.assert_array_equal(
+            ViewScansPanel._focused_region_image(processed, record), expected,
+        )
+        for color in (None, [255, 255, 255], [0, 0, 0]):
+            record["display_color_rgb"] = color
+            self.assertFalse(np.any(
+                ViewScansPanel._focused_region_image(processed, record)
+            ))
 
     def test_selected_100x_region_is_sent_to_database_export(self):
         panel = ViewScansPanel.__new__(ViewScansPanel)

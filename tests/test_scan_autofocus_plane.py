@@ -129,14 +129,14 @@ class ScanAutofocusPlaneTests(unittest.TestCase):
 
         self.assertEqual(
             ScanManager._focus_corner_offsets(inset_offsets),
-            [(1, 1), (1, -2), (-1, -2)],
+            [(1.0, 1.5), (1.0, -1.5), (-1.0, -1.5)],
         )
         # A three-location axis cannot be inset on both sides without
         # collapsing two calibration points, but its four-location Y axis
         # can still move inward.
         self.assertEqual(
             ScanManager._focus_corner_offsets(rect_offsets),
-            [(1, 0), (1, -1), (-1, -1)],
+            [(1.0, 0.5), (1.0, -0.5), (-1.0, -0.5)],
         )
         self.assertEqual(
             ScanManager._focus_corner_offsets(row_offsets),
@@ -149,7 +149,11 @@ class ScanAutofocusPlaneTests(unittest.TestCase):
 
     def test_10x_and_20x_calibration_focus_three_inner_points_and_predict_tiles(self):
         scan_offsets, _ = coordinate_generator.generate_rect_coords(5, 6)
-        expected_focus_offsets = [(1, 1), (1, -2), (-1, -2)]
+        expected_focus_offsets = [
+            (1.0, 1.5),
+            (1.0, -1.5),
+            (-1.0, -1.5),
+        ]
 
         for magnification in ("10X", "20X"):
             with self.subTest(magnification=magnification):

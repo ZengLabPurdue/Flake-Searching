@@ -38,7 +38,7 @@ class ScanManager:
     }
     COMPLETE_SCAN_WINDOWS = {
         "Complete Scan (1 Chip)": (5, 5),
-        "Full Stage Scan": (50, 25),
+        "Full Stage Scan": (5, 25),
     }
     RETURN_TO_START_SCAN_TYPES = set(COMPLETE_SCAN_WINDOWS) | {
         "2x Scan",
@@ -620,6 +620,7 @@ class ScanManager:
             if scan_magnification == "10x"
             else coordinate_generator.generate_20x_scan_coordinates
         )
+        map_to_stage_affine = self._fit_saved_2x_map_to_stage_affine(scan_path)
         scan_window_rgb = chip_map.copy()
         scan_coordinates = coordinate_generator_function(
             self.app,
@@ -629,6 +630,7 @@ class ScanManager:
             scale_2x,
             scan_window_rgb,
             self.camera.get_Size(),
+            map_to_stage_affine=map_to_stage_affine,
         )
         self.app.set_true_map(scan_window_rgb)
         scan_window_map = cv2.cvtColor(
@@ -724,6 +726,57 @@ class ScanManager:
         if value is None:
             raise ValueError(f"Missing map metadata field: {key}")
         return number_type(float(value))
+
+    def _fit_saved_2x_map_to_stage_affine(self, scan_path):
+        """Recover the actual stitched-map geometry from saved 2X controls."""
+        map_points = []
+        stage_points = []
+        raw_dir = Path(scan_path) / "All Images" / "2x" / "Raw"
+        for tile_path in sorted(raw_dir.glob("*.png")):
+            metadata = image_metadata.read_png_metadata(tile_path)
+            try:
+                map_point = [
+                    self._metadata_number(metadata, "map_center_x", float),
+                    self._metadata_number(metadata, "map_center_y", float),
+                ]
+                stage_point = [
+                    self._metadata_number(metadata, "stage_x_um", float),
+                    self._metadata_number(metadata, "stage_y_um", float),
+                ]
+            except (TypeError, ValueError):
+                continue
+            map_points.append(map_point)
+            stage_points.append(stage_point)
+
+        if len(map_points) < 3:
+            print(
+                "Fewer than three valid 2X map controls were saved; "
+                "using nominal map-to-stage calibration."
+            )
+            return None
+
+        try:
+            affine = coordinate_generator.fit_map_to_stage_affine(
+                map_points,
+                stage_points,
+            )
+        except ValueError as error:
+            print(
+                f"Could not fit the saved 2X map controls ({error}); "
+                "using nominal map-to-stage calibration."
+            )
+            return None
+
+        predicted = np.column_stack(
+            (np.asarray(map_points, dtype=float), np.ones(len(map_points)))
+        ) @ affine.T
+        residual = predicted - np.asarray(stage_points, dtype=float)
+        rmse_x, rmse_y = np.sqrt(np.mean(residual ** 2, axis=0))
+        print(
+            f"2X map-to-stage affine fit from {len(map_points)} tiles | "
+            f"RMSE: ({rmse_x:.2f}, {rmse_y:.2f}) um"
+        )
+        return affine
 
     def _save_sparse_array_layer(self, image, output_dir, map_id, tile_size=512):
         """Persist only non-empty chunks of a flattened map layer."""
