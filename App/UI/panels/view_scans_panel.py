@@ -185,7 +185,7 @@ def format_region_statistics(record):
     return "\n".join((
         f"Class: {classification or '—'}",
         f"Group: {group or '—'}",
-        f"Size: {area_text}",
+        f"Area: {area_text}",
         f"Longest side: {size_text}",
         f"Width: {width_text}",
         f"Height: {height_text}",
@@ -238,6 +238,8 @@ class ViewScansPanel:
         self.current_result_path = None
         self._processed_region_cache_path = None
         self._processed_region_cache_rgb = None
+        self.inspection = None
+        self.app.img_label.bind("<Button-1>", self._inspection_image_click, add="+")
         self.tile_viewer = SparseTileViewer(self.app.scan_results_canvas)
 
         self.results_menu = None
@@ -249,7 +251,7 @@ class ViewScansPanel:
     def _build_panel(self):
         self.frame = Frame(
             self.parent,
-            bg="#f0f0f0",
+            bg="white",
             width=204,
             height=225,
         )
@@ -272,6 +274,15 @@ class ViewScansPanel:
             "ScanResults.TCheckbutton",
             background="white",
             foreground="black",
+        )
+        style.map("ScanResults.TCheckbutton", background=[
+            ("disabled", "white"), ("pressed", "white"), ("active", "white"),
+        ])
+        style.configure(
+            "Normal.TButton",
+            font="TkDefaultFont",
+            background="white",
+            relief="flat",
         )
 
         self.title_label = Label(
@@ -370,11 +381,13 @@ class ViewScansPanel:
         self.region_button_panel.columnconfigure(1, weight=1)
         self.btn_previous_region = ttk.Button(
             self.region_button_panel,
+            style="Normal.TButton",
             text="\u25c2 Region",
             command=self.previous_region,
         )
         self.btn_next_region = ttk.Button(
             self.region_button_panel,
+            style="Normal.TButton",
             text="Region \u25b8",
             command=self.next_region,
         )
@@ -404,17 +417,29 @@ class ViewScansPanel:
             sticky="w",
             pady=(4, 0),
         )
-        self.save_database_button = ttk.Button(
-            self.region_group,
-            text="Save selected to database",
-            command=self.save_selected_region_to_database,
+        self.inspect_button = ttk.Button(
+            self.region_group, text="Image under 100X", style="Normal.TButton",
+            command=self.start_inspection,
         )
-        self.save_database_button.grid(
-            row=4,
-            column=0,
-            sticky="ew",
-            pady=(5, 0),
+        self.inspect_button.grid(row=4, column=0, sticky="ew", pady=(5, 0))
+        self.inspection_panel = tk.LabelFrame(self.content, text="Save Flake", bg="white",
+                                             fg="black", borderwidth=0, highlightthickness=0)
+        self.inspection_status = tk.StringVar(value="")
+        Label(self.inspection_panel, textvariable=self.inspection_status, bg="white", fg="#333333",
+                  wraplength=156).pack(fill="x", padx=6, pady=6)
+        self.confirm_inspection_button = ttk.Button(
+            self.inspection_panel, text="Save under 100X", command=self.confirm_inspection,
+            style="Normal.TButton",
         )
+        self.confirm_inspection_button.pack(fill="x", padx=6, pady=3)
+        self.refocus_inspection_button = ttk.Button(
+            self.inspection_panel, text="Refocus at 100X", command=self.refocus_inspection,
+            style="Normal.TButton",
+        )
+        self.refocus_inspection_button.pack(fill="x", padx=6, pady=3)
+        ttk.Button(self.inspection_panel, text="Back to results",
+                   style="Normal.TButton",
+                   command=self.end_inspection).pack(fill="x", padx=6, pady=3)
 
         self.filtered_map_var = tk.BooleanVar(value=False)
         self.filtered_map_checkbox = ttk.Checkbutton(
@@ -494,6 +519,7 @@ class ViewScansPanel:
             self.filtered_map_checkbox,
             self.raw_result_checkbox,
             self.button_panel,
+            self.inspection_panel,
         )
         bottom = max(
             (
@@ -770,12 +796,14 @@ class ViewScansPanel:
         self.frame.place(relx=0.0, rely=0.0, anchor="nw")
 
     def hide(self):
+        self.end_inspection(restore_view=False)
         self.frame.place_forget()
 
     def pause(self):
         self.tile_viewer.pause()
 
     def shutdown(self):
+        self.end_inspection(restore_view=False)
         self.tile_viewer.shutdown()
 
     def display_chip_dropdown(self, display=True):
@@ -865,6 +893,7 @@ class ViewScansPanel:
         return indexed
 
     def _clear_current_regions(self):
+        self.end_inspection()
         self.current_regions = []
         self.current_region_key = None
         self.view_region_index = 0
@@ -880,6 +909,7 @@ class ViewScansPanel:
             viewer.set_highlight(None)
 
     def _set_current_regions(self, result_path, preserve_region=False):
+        self.end_inspection()
         key = result_image_key(result_path)
         same_image = key == self.current_region_key
         self.current_region_key = key
@@ -906,6 +936,13 @@ class ViewScansPanel:
         self._configure_database_button()
 
     def _configure_database_button(self):
+        inspect_button = getattr(self, "inspect_button", None)
+        if inspect_button is not None:
+            regions = getattr(self, "current_regions", ())
+            record = regions[self.view_region_index % len(regions)] if regions else {}
+            enabled = bool(record.get("location", {}).get("stage_position_um")) and "class_id" not in record
+            enabled = enabled and not self.app.scan_manager.is_scan_running()
+            inspect_button.state(["!disabled"] if enabled else ["disabled"])
         button = getattr(self, "save_database_button", None)
         if button is None:
             return
@@ -947,7 +984,7 @@ class ViewScansPanel:
         self._update_region_highlight(fit_image=True)
 
     def _update_region_highlight(self, fit_image=False):
-        """Render accepted flake masks in white on a black canvas."""
+        """Render accepted flake masks in their class colors on black."""
         viewer = getattr(self, "tile_viewer", None)
         if viewer is None:
             return
@@ -972,10 +1009,10 @@ class ViewScansPanel:
         records = self.current_regions if show_everything else [
             self.current_regions[self.view_region_index % len(self.current_regions)]
         ]
-        binary_rgb = np.zeros_like(image_rgb)
+        classified_rgb = np.zeros_like(image_rgb)
         for record in records:
-            self._paint_region_mask(binary_rgb, image_rgb, record)
-        image_rgb = binary_rgb
+            self._paint_region_mask(classified_rgb, image_rgb, record)
+        image_rgb = classified_rgb
 
         view_state = None
         if not fit_image and hasattr(viewer, "capture_view_state"):
@@ -1073,8 +1110,112 @@ class ViewScansPanel:
             except (TypeError, ValueError):
                 return focused
         target = focused[y1:y2, x1:x2]
-        target[local_mask] = 255
+        color = record.get("display_color_rgb")
+        try:
+            color = tuple(int(channel) for channel in color)
+            if len(color) != 3 or any(channel < 0 or channel > 255 for channel in color):
+                color = (255, 255, 255)
+        except (TypeError, ValueError):
+            color = (255, 255, 255)
+        target[local_mask] = color
         return focused
+
+    def start_inspection(self):
+        if not self.current_regions or self.view_scan_path is None:
+            return
+        from Scanning.flake_inspection import FlakeInspection
+        manager = self.app.scan_manager
+        if manager.is_scan_running():
+            messagebox.showinfo("Microscope busy", "Wait for the current operation to finish.", parent=self.root)
+            return
+        record = self.current_regions[self.view_region_index % len(self.current_regions)]
+        session = FlakeInspection(
+            self.view_scan_path, record,
+            lambda event, value: self._inspection_update(session, event, value),
+        )
+        self.inspection = session
+        self.inspection_panel.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+        self.inspection_status.set(f"{record.get('classification', 'Flake')}: preparing inspection…")
+        self.confirm_inspection_button.state(["disabled"])
+        self.refocus_inspection_button.state(["disabled"])
+        self.inspect_button.state(["disabled"])
+        self._queue_panel_resize()
+        self.app.set_live_mapping(False)
+        self.app.set_view("Flake Inspection")
+        try:
+            manager.start_scan(
+                flake_inspection=session,
+                on_error=lambda error: messagebox.showerror("Flake inspection", str(error), parent=self.root),
+            )
+        except Exception as error:
+            self.end_inspection()
+            messagebox.showerror("Flake inspection", str(error), parent=self.root)
+
+    def _inspection_update(self, session, event, value):
+        if event == "finished":
+            # The worker releases its hardware lock immediately after this
+            # notification. Refresh availability on a subsequent UI tick.
+            self.root.after(100, self._configure_database_button)
+        if getattr(self, "inspection", None) is not session:
+            return
+        if event == "finished":
+            self.end_inspection()
+            return
+        if event == "error":
+            messagebox.showerror("Flake inspection", value, parent=self.root)
+            return
+        if event == "center":
+            self.inspection_status.set("Automatic centering was uncertain. Click inside the intended flake in this 10X image, or return to results.")
+            self.confirm_inspection_button.state(["disabled"])
+            self.refocus_inspection_button.state(["disabled"])
+            self.app.set_view("Flake Centering")
+            self.app.display_image(value, color_order="BGR")
+            return
+        self.inspection_status.set(value)
+        ready = event == "ready" and not session.saved
+        self.confirm_inspection_button.state(["!disabled"] if ready else ["disabled"])
+        self.refocus_inspection_button.state(["!disabled"] if event in ("ready", "saved") else ["disabled"])
+        if event == "saved":
+            self.region_records_by_image = self._load_region_records(self.view_scan_path)
+            self.current_regions = list(self.region_records_by_image.get(self.current_region_key, ()))
+
+    def confirm_inspection(self):
+        session = getattr(self, "inspection", None)
+        if session is not None and session.ready and not session.saved:
+            self.confirm_inspection_button.state(["disabled"])
+            self.refocus_inspection_button.state(["disabled"])
+            session.confirm.set()
+
+    def _inspection_image_click(self, event):
+        session = getattr(self, "inspection", None)
+        if session is None or self.app.get_view() != "Flake Centering":
+            return
+        point = self.app.display_to_image_point(event.x, event.y)
+        if point is None:
+            return
+        session.center_point = point
+        self.app.set_view("Flake Inspection")
+        self.inspection_status.set("Centering the selected point…")
+        session.center_selected.set()
+
+    def refocus_inspection(self):
+        session = getattr(self, "inspection", None)
+        if session is not None and session.ready:
+            self.confirm_inspection_button.state(["disabled"])
+            self.refocus_inspection_button.state(["disabled"])
+            session.refocus.set()
+
+    def end_inspection(self, restore_view=True):
+        session = getattr(self, "inspection", None)
+        if session is None:
+            return
+        self.inspection = None
+        self.app.scan_manager.stop_scan()
+        self.inspection_panel.grid_remove()
+        self._queue_panel_resize()
+        if restore_view and self.app.get_view() in ("Flake Inspection", "Flake Centering"):
+            self.app.set_view("Scan Results")
+            self._update_region_highlight(fit_image=True)
 
     def save_selected_region_to_database(self):
         if not self.current_regions or self.view_scan_path is None:
@@ -1099,6 +1240,7 @@ class ViewScansPanel:
         )
 
     def previous_region(self, event=None):
+        self.end_inspection()
         if self.app.get_view() != "Scan Results" or not self.current_regions:
             return
         self.view_region_index = (
@@ -1108,6 +1250,7 @@ class ViewScansPanel:
         self.root.focus_set()
 
     def next_region(self, event=None):
+        self.end_inspection()
         if self.app.get_view() != "Scan Results" or not self.current_regions:
             return
         self.view_region_index = (
@@ -1631,6 +1774,7 @@ class ViewScansPanel:
         self.raw_result_var.set(not processed)
 
     def previous_image(self, event=None):
+        self.end_inspection()
         if self.app.get_view() != "Scan Results":
             return
 
@@ -1645,6 +1789,7 @@ class ViewScansPanel:
         self.root.focus_set()
 
     def next_image(self, event=None):
+        self.end_inspection()
         if self.app.get_view() != "Scan Results":
             return
 

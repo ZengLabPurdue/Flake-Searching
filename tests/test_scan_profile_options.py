@@ -52,6 +52,30 @@ from Scanning.scan_profile import (  # noqa: E402
 
 
 class ScanProfileOptionsTests(unittest.TestCase):
+    def test_scan_and_preview_preserve_saved_class_tolerance(self):
+        image = np.full((100, 100, 3), 180, dtype=np.uint8)
+        image[30:70, 30:70] = 150
+        with tempfile.TemporaryDirectory() as directory:
+            profile = ScanProfile(directory)
+            item = self._add_class(profile, "Flake", (-24, -24, -24))
+            item["threshold"] = 10
+            profile.save_profile("Tolerance")
+            common = dict(return_details=True, draw_legend=False, color_seed=0)
+            preview, _, preview_details = find_flakes(
+                image, profile_configuration=profile.matching_configuration(), **common,
+            )
+            scanned, _, scan_details = find_flakes(image, profile_path=profile.path, **common)
+            _, _, strict_details = find_flakes(
+                image, profile_path=profile.path, contrast_threshold=3, **common,
+            )
+        self.assertGreater(len(preview_details["combined_region_results"]), 0)
+        self.assertEqual(len(strict_details["combined_region_results"]), 0)
+        self.assertEqual(
+            len(scan_details["combined_region_results"]),
+            len(preview_details["combined_region_results"]),
+        )
+        np.testing.assert_array_equal(scanned, preview)
+
     def _add_class(
         self,
         profile,

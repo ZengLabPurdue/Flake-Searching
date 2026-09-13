@@ -500,7 +500,7 @@ class DisplayAccelerationTests(unittest.TestCase):
 
         self.assertIn("Class: Thin flake", text)
         self.assertIn("Group: Graphene", text)
-        self.assertIn("Size: 32.12 µm²", text)
+        self.assertIn("Area: 32.12 µm²", text)
         self.assertIn("Longest side: 10 µm", text)
         self.assertIn("Width: 10 µm", text)
         self.assertIn("Height: 5 µm", text)
@@ -515,7 +515,7 @@ class DisplayAccelerationTests(unittest.TestCase):
             "bounding_box_px": {"width": 31, "height": 17},
         })
 
-        self.assertIn("Size: —", text)
+        self.assertIn("Area: —", text)
         self.assertIn("Longest side: 31 px", text)
         self.assertIn("Width: 31 px", text)
         self.assertIn("Height: 17 px", text)
@@ -535,7 +535,7 @@ class DisplayAccelerationTests(unittest.TestCase):
             },
         })
 
-        self.assertIn("Size: 80 px²", text)
+        self.assertIn("Area: 80 px²", text)
         self.assertIn("Longest side: 10 px", text)
         self.assertIn("Perimeter: 40 px", text)
         self.assertIn("Perimeter / area: 0.5 px⁻¹", text)
@@ -585,7 +585,7 @@ class DisplayAccelerationTests(unittest.TestCase):
         self.assertEqual(panel.view_region_index, 0)
         self.assertEqual(panel.current_regions, [{"id": 3}])
 
-    def test_region_navigation_shows_only_accepted_masks_white_on_black(self):
+    def test_region_navigation_shows_only_accepted_class_colors_on_black(self):
         loaded = []
         viewer = type(
             "_Viewer",
@@ -631,7 +631,7 @@ class DisplayAccelerationTests(unittest.TestCase):
         expected_mask = np.zeros((3, 4), dtype=bool)
         expected_mask.reshape(-1)[[0, 1, 5, 6, 10, 11]] = True
         expected = np.zeros_like(processed)
-        expected[4:7, 5:9][expected_mask] = 255
+        expected[4:7, 5:9][expected_mask] = (12, 34, 56)
         np.testing.assert_array_equal(focused, expected)
         self.assertIsNone(loaded[-1][1]["view_state"])
 
@@ -661,7 +661,7 @@ class DisplayAccelerationTests(unittest.TestCase):
             "display_color_rgb": [12, 34, 56],
         }
         expected = np.zeros_like(processed)
-        expected[1, 2] = 255
+        expected[1, 2] = (12, 34, 56)
         np.testing.assert_array_equal(
             ViewScansPanel._focused_region_image(processed, record), expected,
         )

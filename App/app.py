@@ -830,7 +830,8 @@ class App:
             "Load Search Profile",
         ):
             self.scan_profile_panel.hide()
-        if hasattr(self, "view_scans_panel") and mode != "Scan Results":
+        if hasattr(self, "view_scans_panel") and mode not in ("Scan Results", "Flake Inspection", "Flake Centering"):
+            self.view_scans_panel.end_inspection(restore_view=False)
             self.view_scans_panel.pause()
             self.view_scans_panel.hide()
 
@@ -848,7 +849,7 @@ class App:
             self.map_canvas.pack(fill=BOTH, expand=True) # Show map canvas
             self.img_label.pack_forget() # Hide image label
             pass
-        elif mode == "Camera View":
+        elif mode in ("Camera View", "Flake Inspection", "Flake Centering"):
             self.scan_results_canvas.pack_forget()
             self.img_label.pack(fill=BOTH, expand=True)
             self.map_canvas.pack_forget() # Hide map canvas

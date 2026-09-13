@@ -395,7 +395,7 @@ def find_flakes(
     display=False,
     return_details=False,
     profile_path=None,
-    contrast_threshold=DEFAULT_CONTRAST_MATCH_THRESHOLD,
+    contrast_threshold=None,
     region_flood_fill_threshold=DEFAULT_REGION_FLOOD_FILL_THRESHOLD,
     color_seed=None,
     draw_legend=True,
@@ -407,6 +407,9 @@ def find_flakes(
     draw_region_areas=False,
 ):
     """Detect flakes and return either class labels or the legacy masked image.
+
+    With ``contrast_threshold=None``, use each saved profile class's tolerance.
+    A numeric value explicitly overrides sampled-color tolerances.
 
     The default result is the RGB class map used by Flake Recognition. Set
     ``legacy_mask=True`` for the production scanner's BGR image with flakes set
@@ -691,7 +694,7 @@ def floodfill_internal_contours(
     area_threshold=DEFAULT_AREA_THRESHOLD,
     display=False,
     profile_path=None,
-    contrast_threshold=DEFAULT_CONTRAST_MATCH_THRESHOLD,
+    contrast_threshold=None,
     region_flood_fill_threshold=DEFAULT_REGION_FLOOD_FILL_THRESHOLD,
     color_seed=None,
     draw_legend=True,

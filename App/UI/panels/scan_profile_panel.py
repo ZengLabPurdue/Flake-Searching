@@ -1140,7 +1140,10 @@ class ScanProfilePanel:
             "Load Search Profile" if self.mode == "edit" else "Create Search Profile"
         )
         self._display_bgr(image_bgr)
-        self.status_var.set("Preview image loaded. Click Run profile to test it.")
+        self.status_var.set(
+            f"Preview image loaded. Calibration: {self._preview_calibration_description()}. "
+            "Click Run profile to test it."
+        )
 
     def run_profile_preview(self):
         if self.class_edit_active:
@@ -1187,7 +1190,8 @@ class ScanProfilePanel:
         self.status_var.set(
             f"Preview complete in {elapsed_seconds:.3f}s: "
             f"{matched} identified, "
-            f"{len(details['region_results'])} total regions."
+            f"{len(details['region_results'])} total regions. "
+            f"Calibration: {self._preview_calibration_description()}."
         )
 
     def toggle_profile_preview(self):
@@ -1496,7 +1500,7 @@ class ScanProfilePanel:
             heading += f"  |  Group: {group}"
         return "\n".join((
             heading,
-            f"Size: {cls._format_measurement(region.get('area_um2'), 'µm²')}"
+            f"Area: {cls._format_measurement(region.get('area_um2'), 'µm²')}"
             f"  |  Longest side: "
             f"{cls._format_measurement(region.get('size_um'), 'µm')}",
             f"Width: {cls._format_measurement(region.get('width_um'), 'µm')}"
@@ -2072,12 +2076,27 @@ class ScanProfilePanel:
             for index, variable in enumerate(variables):
                 variable.set("" if values is None else str(values[index]))
 
+    def _preview_calibration(self):
+        source = getattr(self, "preview_source_path", None)
+        metadata = image_metadata.read_png_metadata(source) if source is not None else {}
+        magnification = str(metadata.get("magnification") or self.app.get_magnification()).upper()
+        resolution = str(metadata.get("resolution") or self.app.get_resolution()).upper()
+        return magnification, resolution, metadata
+
+    def _preview_calibration_description(self):
+        magnification, resolution, metadata = self._preview_calibration()
+        source = "image metadata" if metadata.get("magnification") and metadata.get("resolution") else "preview settings / available metadata"
+        return f"{magnification}, {resolution} ({source})"
+
     def _preview_pixel_size(self):
-        magnification = str(self.app.get_magnification()).upper()
-        resolution = self.app.get_resolution()
+        magnification, resolution, metadata = self._preview_calibration()
         try:
             return float(PIXEL_SIZE[magnification][resolution])
         except (KeyError, TypeError, ValueError) as exc:
+            if metadata.get("magnification") or metadata.get("resolution"):
+                raise ScanProfileError(
+                    f"The image calibration is unsupported: {magnification}, {resolution}."
+                ) from exc
             requires_calibration = any(
                 item.get("enabled", False)
                 and item.get("type") != FILTER_TYPE_NEURAL_NETWORK

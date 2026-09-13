@@ -129,7 +129,11 @@ class ScanManager:
 
     def _run_scan_worker(self, options, on_error):
         try:
-            self.run_scan(**options)
+            inspection = options.get("flake_inspection")
+            if inspection is not None:
+                inspection.run(self)
+            else:
+                self.run_scan(**options)
         except Exception as error:
             if on_error is not None:
                 self.ui_dispatch(on_error, error)

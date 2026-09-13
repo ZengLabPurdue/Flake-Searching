@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import tkinter as tk
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -13,9 +14,57 @@ MODULE_PATH = REPOSITORY_ROOT / "Profile Editor" / "profile_editor_app.py"
 SPEC = spec_from_file_location("profile_editor_app", MODULE_PATH)
 profile_editor_app = module_from_spec(SPEC)
 SPEC.loader.exec_module(profile_editor_app)
+from config import PIXEL_SIZE
+from Imaging.image_metadata import save_png
+from Scanning.contour_finder import find_flakes
 
 
 class ProfileEditorAppTests(unittest.TestCase):
+    def test_saved_image_calibration_controls_size_filter_like_scan(self):
+        panel = object.__new__(profile_editor_app.ScanProfilePanel)
+        panel.app = SimpleNamespace(get_magnification=lambda: "10X", get_resolution=lambda: "LOW")
+        panel.scan_profile = SimpleNamespace(filters=[])
+        image = np.full((100, 100, 3), 180, dtype=np.uint8)
+        image[30:70, 30:70] = 150
+        configuration = {
+            "classes": [{"name": "Flake", "classification_type": "sample", "class_index": 0,
+                         "identify": True, "group": "", "contrast_rgb": np.array([-30., -30., -30.]),
+                         "tolerance": 5}],
+            "filters": [{"id": "size", "name": "Small flakes", "type": "size", "enabled": True,
+                         "minimum_um": None, "maximum_um": 100}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            panel.preview_source_path = Path(directory) / "cropped_scan.png"
+            save_png(panel.preview_source_path, image, {"magnification": "20X", "resolution": "HIGH"})
+            actual = panel._preview_pixel_size()
+            self.assertEqual(actual, PIXEL_SIZE["20X"]["HIGH"])
+            self.assertIn("image metadata", panel._preview_calibration_description())
+            common = dict(return_details=True, draw_legend=False, color_seed=0,
+                          profile_configuration=configuration)
+            _, _, preview = find_flakes(image, pixel_size_um=actual, **common)
+            _, _, scan = find_flakes(image, pixel_size_um=PIXEL_SIZE["20X"]["HIGH"], **common)
+            _, _, old_preview = find_flakes(image, pixel_size_um=PIXEL_SIZE["10X"]["LOW"], **common)
+        self.assertTrue(preview["combined_region_results"])
+        self.assertFalse(old_preview["combined_region_results"])
+        self.assertEqual(preview["combined_region_results"][0]["area_um2"],
+                         scan["combined_region_results"][0]["area_um2"])
+
+    def test_untagged_image_uses_manual_preview_calibration(self):
+        panel = object.__new__(profile_editor_app.ScanProfilePanel)
+        panel.app = SimpleNamespace(get_magnification=lambda: "10X", get_resolution=lambda: "MED")
+        panel.preview_source_path = None
+        self.assertEqual(panel._preview_pixel_size(), PIXEL_SIZE["10X"]["MED"])
+
+    def test_invalid_saved_calibration_is_not_silently_replaced_by_menu(self):
+        panel = object.__new__(profile_editor_app.ScanProfilePanel)
+        panel.app = SimpleNamespace(get_magnification=lambda: "10X", get_resolution=lambda: "HIGH")
+        with tempfile.TemporaryDirectory() as directory:
+            panel.preview_source_path = Path(directory) / "invalid.png"
+            save_png(panel.preview_source_path, np.zeros((10, 10, 3), dtype=np.uint8),
+                     {"magnification": "UNKNOWN", "resolution": "HIGH"})
+            with self.assertRaises(ValueError):
+                panel._preview_pixel_size()
+
     def test_standalone_editor_uses_the_shared_profile_directory(self):
         profile = profile_editor_app.ScanProfile()
 
@@ -111,7 +160,7 @@ class ProfileEditorAppTests(unittest.TestCase):
         self.assertTrue(np.all(selected[instance_mask == 0] == 255))
         self.assertFalse(np.any(np.all(highlighted == (255, 0, 255), axis=2)))
         self.assertIn("Class: Graphene", statistics)
-        self.assertIn("Size: 12.500 µm²", statistics)
+        self.assertIn("Area: 12.500 µm²", statistics)
         self.assertIn("Longest side: 5.250 µm", statistics)
         self.assertIn("P:A: 1.120 1/µm", statistics)
 

@@ -23,8 +23,11 @@ Each class can use either:
   values for red, green, and blue. A region matches only when all three
   channels are inside their ranges; no reference image is required.
 
-Use **Preview > Magnification** and **Preview > Resolution** to select the
-calibration used for physical measurements and geometry filters.
+Saved scan PNGs use the magnification and resolution in their image metadata
+for physical measurements and geometry filters. The preview status shows the
+calibration being used. **Preview > Magnification** and **Preview > Resolution**
+provide fallback settings for images without that metadata. Cropping a scan
+image does not change its micrometers-per-pixel calibration.
 
 Profiles can contain any number of optional filters. Size uses the filled-pixel
 area in µm²; bounding-box width and height use their independent linear

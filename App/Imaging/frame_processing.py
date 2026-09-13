@@ -169,15 +169,15 @@ class FrameProcessor:
                             stage_position=stage_position,
                         )
 
-            if self.app.get_view() == "Camera View":
+            if self.app.get_view() in ("Camera View", "Flake Inspection"):
                 camera_image = img
-                if self.app.get_camera_vignette_filter():
+                if self.app.get_view() != "Flake Inspection" and self.app.get_camera_vignette_filter():
                     try:
                         camera_image = self.apply_vignette_filter(camera_image)
                     except (FileNotFoundError, ValueError) as exc:
                         self.app.disable_camera_vignette_filter(str(exc))
 
-                if self.app.get_camera_chip_filter():
+                if self.app.get_view() != "Flake Inspection" and self.app.get_camera_chip_filter():
                     display_metrics = self.app.display_image(
                         chip_edge_classifier.chip_filter(camera_image),
                         color_order="GRAY",
