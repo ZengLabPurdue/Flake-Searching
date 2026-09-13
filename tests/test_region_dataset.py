@@ -7,10 +7,10 @@ import cv2
 import numpy as np
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Scanning.region_dataset import (  # noqa: E402
+from scanning.region_dataset import (  # noqa: E402
     NEW_FLAKE_FILTER_DIR,
     build_region_training_image,
     save_region_training_images,

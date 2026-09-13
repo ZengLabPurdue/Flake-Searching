@@ -13,7 +13,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPOSITORY_ROOT / "Flake Recognition" / "contour_finder.py"
+MODULE_PATH = REPOSITORY_ROOT / "tools" / "contrast_viewer.py"
 SPEC = spec_from_file_location("contrast_viewer_contour_finder", MODULE_PATH)
 contour_finder = module_from_spec(SPEC)
 SPEC.loader.exec_module(contour_finder)

@@ -10,13 +10,13 @@ import numpy as np
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPOSITORY_ROOT / "Profile Editor" / "profile_editor_app.py"
+MODULE_PATH = REPOSITORY_ROOT / "profile_editor" / "profile_editor_app.py"
 SPEC = spec_from_file_location("profile_editor_app", MODULE_PATH)
 profile_editor_app = module_from_spec(SPEC)
 SPEC.loader.exec_module(profile_editor_app)
 from config import PIXEL_SIZE
-from Imaging.image_metadata import save_png
-from Scanning.contour_finder import find_flakes
+from imaging.image_metadata import save_png
+from scanning.contour_finder import find_flakes
 
 
 class ProfileEditorAppTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class ProfileEditorAppTests(unittest.TestCase):
 
         self.assertEqual(
             profile.profiles_dir.resolve(),
-            (REPOSITORY_ROOT / "App" / "Profiles").resolve(),
+            (REPOSITORY_ROOT / "app" / "Profiles").resolve(),
         )
 
     def test_display_click_maps_back_to_the_source_image(self):

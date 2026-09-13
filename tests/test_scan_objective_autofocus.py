@@ -10,12 +10,12 @@ import numpy as np
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-APP_DIR = REPOSITORY_ROOT / "App"
+APP_DIR = REPOSITORY_ROOT / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Hardware.turret_controller import TurretController  # noqa: E402
-from Scanning import scan_manager as scan_manager_module  # noqa: E402
-from Scanning.scan_manager import ScanManager  # noqa: E402
+from hardware.turret_controller import TurretController  # noqa: E402
+from scanning import scan_manager as scan_manager_module  # noqa: E402
+from scanning.scan_manager import ScanManager  # noqa: E402
 
 
 class TurretAutofocusOptionTests(unittest.TestCase):

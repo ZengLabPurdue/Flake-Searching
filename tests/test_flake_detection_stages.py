@@ -15,7 +15,7 @@ from matplotlib.backend_bases import KeyEvent
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = REPOSITORY_ROOT / "Flake Recognition" / "flake_detection_stages.py"
+MODULE_PATH = REPOSITORY_ROOT / "tools" / "flake_detection_stages.py"
 SPEC = spec_from_file_location("flake_detection_stages", MODULE_PATH)
 flake_detection_stages = module_from_spec(SPEC)
 SPEC.loader.exec_module(flake_detection_stages)

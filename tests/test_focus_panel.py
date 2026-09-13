@@ -3,10 +3,10 @@ import sys
 import unittest
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from UI.panels.focus_panel import FocusPanel  # noqa: E402
+from ui.panels.focus_panel import FocusPanel  # noqa: E402
 
 
 class _FakeVariable:

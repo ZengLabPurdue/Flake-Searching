@@ -10,12 +10,12 @@ import cv2
 import numpy as np
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Hardware.stage_api import stage as Stage  # noqa: E402
-from Imaging import amcam  # noqa: E402
-from Imaging.frame_processing import FrameProcessor  # noqa: E402
+from hardware.stage_api import stage as Stage  # noqa: E402
+from imaging import amcam  # noqa: E402
+from imaging.frame_processing import FrameProcessor  # noqa: E402
 
 
 class _FakeApp:
@@ -212,7 +212,7 @@ class CaptureAndStageSynchronizationTests(unittest.TestCase):
         )
 
         with patch(
-            "Imaging.frame_processing.cv2.accumulate",
+            "imaging.frame_processing.cv2.accumulate",
             wraps=cv2.accumulate,
         ) as accumulate:
             captured = processor.capture_frame_raw(
@@ -240,7 +240,7 @@ class CaptureAndStageSynchronizationTests(unittest.TestCase):
         )
 
         with patch(
-            "Imaging.frame_processing.cv2.accumulate",
+            "imaging.frame_processing.cv2.accumulate",
             wraps=cv2.accumulate,
         ) as accumulate:
             captured = processor.capture_frame(

@@ -5,11 +5,11 @@ from pathlib import Path
 import numpy as np
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from Scanning import coordinate_generator  # noqa: E402
+from scanning import coordinate_generator  # noqa: E402
 
 
 class _HighResolutionApp:

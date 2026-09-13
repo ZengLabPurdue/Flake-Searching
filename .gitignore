@@ -2,15 +2,15 @@
 Labeled Data/
 
 # Ignore scans
-App/Scans/
+app/Scans/
 
 # Ignore saved images
-App/Saved Images/
+app/Saved Images/
 
 # Ignore user-created scan search profiles
-App/Profiles/
+app/Profiles/
 
 # Persistent microscope calibration images. These are ignored so they are not
 # mistaken for disposable untracked test/build output. Never clean these paths.
-App/Flatfields/*.png
-App/Calibration Backups/Flatfields/*.png
+app/Flatfields/*.png
+app/Calibration Backups/Flatfields/*.png

@@ -3,10 +3,10 @@ import sys
 import unittest
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Scanning.scan_manager import ScanManager  # noqa: E402
+from scanning.scan_manager import ScanManager  # noqa: E402
 
 
 class _FakeApp:

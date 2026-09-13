@@ -4,10 +4,10 @@ import unittest
 from unittest.mock import patch
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from UI.panels import objective_control_panel  # noqa: E402
+from ui.panels import objective_control_panel  # noqa: E402
 
 
 class _FakeVariable:

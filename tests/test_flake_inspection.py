@@ -10,11 +10,11 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "App"))
-from Imaging.image_metadata import save_png
-from Scanning.flake_inspection import FlakeInspection, centered_candidate, prepare_positions
-from Scanning.scan_manager import ScanManager
-from UI.panels.view_scans_panel import ViewScansPanel
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+from imaging.image_metadata import save_png
+from scanning.flake_inspection import FlakeInspection, centered_candidate, prepare_positions
+from scanning.scan_manager import ScanManager
+from ui.panels.view_scans_panel import ViewScansPanel
 
 
 class InspectionTests(unittest.TestCase):
@@ -111,9 +111,9 @@ class InspectionTests(unittest.TestCase):
             self.assertTrue((scan_path / record["image_20x"]).is_file())
             self.assertTrue((scan_path / record["image_100x"]).is_file())
             return {"flake_id": "db_flake", "json": self.scan / "database.json"}
-        with patch("Scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration", return_value={}), \
-             patch("Scanning.flake_inspection.contour_finder.find_flakes", return_value=(None, None, {"combined_region_results": [self.region]})), \
-             patch("Scanning.flake_inspection.flake_detection.save_database", side_effect=export) as exporter:
+        with patch("scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration", return_value={}), \
+             patch("scanning.flake_inspection.contour_finder.find_flakes", return_value=(None, None, {"combined_region_results": [self.region]})), \
+             patch("scanning.flake_inspection.flake_detection.save_database", side_effect=export) as exporter:
             session.run(manager)
         exporter.assert_called_once()
         self.assertEqual([e for e in events if e[0] == "objective"],
@@ -128,9 +128,9 @@ class InspectionTests(unittest.TestCase):
         manager, events = self.manager()
         session = FlakeInspection(self.scan, self.record,
                                   lambda event, value: manager._stop_event.set() if event == "ready" else None)
-        with patch("Scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration", return_value={}), \
-             patch("Scanning.flake_inspection.contour_finder.find_flakes", return_value=(None, None, {"combined_region_results": [self.region]})), \
-             patch("Scanning.flake_inspection.flake_detection.save_database") as exporter:
+        with patch("scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration", return_value={}), \
+             patch("scanning.flake_inspection.contour_finder.find_flakes", return_value=(None, None, {"combined_region_results": [self.region]})), \
+             patch("scanning.flake_inspection.flake_detection.save_database") as exporter:
             session.run(manager)
         exporter.assert_not_called()
         self.assertNotIn(("capture", "100X", False), events)
@@ -170,7 +170,7 @@ class InspectionTests(unittest.TestCase):
         manager, events = self.manager()
         notifications = []
         session = FlakeInspection(self.scan, self.record, lambda *args: notifications.append(args))
-        with patch("Scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration",
+        with patch("scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration",
                    side_effect=ValueError("Profile missing")):
             session.run(manager)
         self.assertFalse(events)
@@ -187,9 +187,9 @@ class InspectionTests(unittest.TestCase):
             elif event == "ready":
                 manager._stop_event.set()
         session = FlakeInspection(self.scan, self.record, notify)
-        with patch("Scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration", return_value={}), \
-             patch("Scanning.flake_inspection.contour_finder.find_flakes", return_value=(None, None, {"combined_region_results": []})), \
-             patch("Scanning.flake_inspection.flake_detection.save_database") as exporter:
+        with patch("scanning.flake_inspection.contour_finder.region_classifier.load_profile_configuration", return_value={}), \
+             patch("scanning.flake_inspection.contour_finder.find_flakes", return_value=(None, None, {"combined_region_results": []})), \
+             patch("scanning.flake_inspection.flake_detection.save_database") as exporter:
             session.run(manager)
         self.assertEqual(session.record["centering_method"], "user_selected")
         self.assertIn(("objective", 5), events)

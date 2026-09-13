@@ -10,10 +10,10 @@ import cv2
 import numpy as np
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Scanning.region_classifier import (  # noqa: E402
+from scanning.region_classifier import (  # noqa: E402
     LEGEND_BOTTOM_LEFT,
     LEGEND_BOTTOM_RIGHT,
     LEGEND_TOP_LEFT,
@@ -29,17 +29,17 @@ from Scanning.region_classifier import (  # noqa: E402
     load_profile_configuration,
     match_profile_class,
 )
-from Scanning.contour_finder import (  # noqa: E402
+from scanning.contour_finder import (  # noqa: E402
     _filter_external_candidates,
     find_flakes,
 )
-from Scanning.contour_extractor import get_region_from_point  # noqa: E402
-from Scanning.flake_detection import (  # noqa: E402
+from scanning.contour_extractor import get_region_from_point  # noqa: E402
+from scanning.flake_detection import (  # noqa: E402
     Flake_Detector,
     encode_region_mask,
     save_database,
 )
-from Scanning.scan_profile import (  # noqa: E402
+from scanning.scan_profile import (  # noqa: E402
     CLASSIFICATION_RANGE,
     FILTER_TYPE_BOUNDING_BOX,
     FILTER_TYPE_NEURAL_NETWORK,
@@ -892,11 +892,11 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
             with (
                 patch(
-                    "Scanning.flake_detection.image_metadata.is_vignette_corrected",
+                    "scanning.flake_detection.image_metadata.is_vignette_corrected",
                     return_value=False,
                 ),
                 patch(
-                    "Scanning.flake_detection.image_metadata.read_png_metadata",
+                    "scanning.flake_detection.image_metadata.read_png_metadata",
                     return_value={},
                 ),
             ):
@@ -1374,11 +1374,11 @@ class ScanProfileOptionsTests(unittest.TestCase):
 
         with (
             patch(
-                "Scanning.region_classifier.ImageDraw.Draw",
+                "scanning.region_classifier.ImageDraw.Draw",
                 return_value=recording_draw,
             ),
             patch(
-                "Scanning.region_classifier._load_class_legend_font",
+                "scanning.region_classifier._load_class_legend_font",
                 return_value=object(),
             ) as load_font,
         ):

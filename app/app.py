@@ -1,0 +1,1015 @@
+import os
+import sys
+import threading
+import time
+from queue import Empty, Queue
+
+import cv2
+import numpy as np
+
+from tkinter import *
+import tkinter as tk
+from tkinter import messagebox, ttk
+from PIL import Image, ImageTk
+
+from config import CROP_RATIO, MAP_SIZE, RESOLUTION_DISPLAY
+
+from mapping.mapper import Mapper
+from scanning.scan_manager import ScanManager
+from scanning.scan_profile import ScanProfile
+from hardware.stage_api import stage
+from hardware.turret_controller import TurretController
+from ui.panels.info_panel import InfoPanel
+from ui.panels.stage_control_panel import StageControlPanel
+from ui.panels.objective_control_panel import ObjectiveControlPanel
+from ui.panels.focus_panel import FocusPanel
+from ui.panels.scan_status_panel import ScanStatusPanel
+from ui.panels.scan_setup_panel import ScanSetupPanel
+from ui.panels.view_scans_panel import ViewScansPanel
+from ui.panels.scan_profile_panel import ScanProfilePanel
+from ui.panels.capture_panel import CapturePanel
+from ui.panels.camera_settings_panel import CameraSettingsPanel
+from ui.display_acceleration import DisplayResizer
+from imaging.frame_processing import FrameProcessor
+from imaging.focus import FocusController
+from imaging.flatfield_storage import (
+    DEFAULT_VIGNETTE_SUBSTRATE,
+    VIGNETTE_SUBSTRATE_LABELS,
+    normalize_vignette_substrate,
+    vignette_substrate_label,
+)
+
+DLL_PATH = os.getcwd() + r"\hardware\PriorSDK1.9.2\x64\PriorScientificSDK.dll"
+PRIOR_COM_PORT = sys.argv[1]
+TURRET_COM_PORT = sys.argv[2]
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        self._ui_thread_id = threading.get_ident()
+        self._ui_queue = Queue()
+        self._ui_poll_job = None
+        self._closing = False
+        self._shutdown_requested = False
+        self._focus_shutdown_started_at = None
+        self._shutdown_returning_to_objective = False
+        self._shutdown_focus_prepared = False
+        self._map_render_job = None
+        self._last_map_render = 0.0
+        self._map_render_interval_ms = 125
+        self._map_state_lock = threading.RLock()
+        self._map_photo = None
+        self._map_canvas_image_id = None
+        self._live_mapping_status = False
+        self._scan_controls_locked = False
+        self._display_resizer = DisplayResizer()
+        self._display_photo = None
+        self._last_display_metrics = None
+        self._schedule_ui_queue_poll()
+
+        self.root.title("Scanning App")
+        self.main_frame = Frame(root, bg="#f0f0f0")
+        self.main_frame.pack(fill=BOTH, expand=True)
+
+        self.map_canvas = Canvas(self.main_frame)
+        self.map_canvas.pack(fill=BOTH, expand=True)
+
+        self.true_map = np.zeros((MAP_SIZE, MAP_SIZE, 3), dtype=np.uint8)
+        self.filter_map = np.zeros((MAP_SIZE, MAP_SIZE), dtype=np.uint8)
+
+        self.img_label = Label(self.main_frame, bg="#f0f0f0")
+        self.img_label.pack(fill=BOTH, expand=True)
+
+        self.scan_results_canvas = Canvas(
+            self.main_frame,
+            bg="black",
+            highlightthickness=0,
+        )
+
+        self.live_mapping_var = tk.BooleanVar(value=False)
+        self.map_chip_filter_var = tk.BooleanVar(value=False)
+        self.camera_chip_filter_var = tk.BooleanVar(value=False)
+        self.camera_vignette_filter_var = tk.BooleanVar(value=False)
+        self.view_mode = None
+        self.set_view("Camera View")
+
+        self.hcam = None
+        self.width = 0
+        self.height = 0
+        self._displayed_image_bounds = None
+        
+        self.magnification = "2X"
+        self.resolution = "HIGH"
+        self.vignette_substrate = DEFAULT_VIGNETTE_SUBSTRATE
+        self.vignette_substrate_var = tk.StringVar(
+            value=vignette_substrate_label(self.vignette_substrate)
+        )
+
+        self.buttons = []
+        self.panels = []
+        self.scan_profile = ScanProfile()
+        self.active_scan_profile = None
+
+        self.stage = stage(PRIOR_COM_PORT, DLL_PATH)
+        
+        self.frame_processor = FrameProcessor(
+            root=self.root,
+            app=self,
+            stage=self.stage,
+            get_live_mapping=self.get_live_mapping,
+        )
+
+        self.focus_controller = FocusController(
+            app=self,
+            stage=self.stage,
+            frame_processor=self.frame_processor,
+        )
+
+        self.turret_controller = TurretController( 
+            app=self,
+            stage=self.stage,
+            turret_port=TURRET_COM_PORT,
+            start_auto_focus_thread=self.focus_controller.start_auto_focus_thread,
+        )
+
+        self.info_panel = InfoPanel(parent=self.main_frame)
+
+        self.scan_status_panel = ScanStatusPanel(
+            parent=self.main_frame,
+            root=self.root,
+            ui_dispatch=self.call_on_ui_thread,
+        )
+
+        self.mapper = Mapper(
+            root=self.root,
+            app=self,
+            stage=self.stage,
+            turret_controller=self.turret_controller,
+            frame_processor=self.frame_processor,
+            update_scan_status=self.scan_status_panel.update_status,
+        )
+        self.frame_processor.place_frame_on_map = self.mapper.place_frame_on_map
+
+        self.frame_processor.run_camera()
+
+        self.scan_manager = ScanManager(
+            root=self.root,
+            app=self,
+            stage=self.stage,
+            turret_controller=self.turret_controller,
+            camera=self.frame_processor.get_camera(),
+            frame_processor=self.frame_processor,
+            mapper=self.mapper,
+            update_scan_status=self.scan_status_panel.update_status,
+            set_scan_running=self.set_scan_running,
+            ui_dispatch=self.call_on_ui_thread,
+        )
+        self.scan_status_panel.set_stop_callback(self.scan_manager.stop_scan)
+
+        self.stage_control_panel = StageControlPanel(
+            parent=self.main_frame,
+            root=self.root,
+            app=self,
+            stage=self.stage,
+        )
+
+        self.objective_control_panel = ObjectiveControlPanel(
+            parent=self.main_frame,
+            app=self,
+            stage=self.stage,
+            turret_controller=self.turret_controller,
+        )
+
+        self.capture_panel = CapturePanel(
+            parent=self.main_frame,
+            app=self,
+            save_image=self.frame_processor.save_image,
+        )
+
+        self.camera_settings_panel = CameraSettingsPanel(
+            parent=self.root,
+            get_camera=self.frame_processor.get_camera,
+            resolution_options=RESOLUTION_DISPLAY,
+            get_resolution=self.get_resolution,
+            change_resolution_callback=self.frame_processor.change_resolution,
+            chip_filter_var=self.camera_chip_filter_var,
+            vignette_filter_var=self.camera_vignette_filter_var,
+            chip_filter_callback=lambda: self.set_view("Camera View"),
+            vignette_filter_callback=self.toggle_camera_vignette_filter,
+            vignette_substrate_var=self.vignette_substrate_var,
+            vignette_substrates=VIGNETTE_SUBSTRATE_LABELS,
+            vignette_substrate_callback=self.set_vignette_substrate,
+            operation_allowed=self.hardware_controls_available,
+        )
+
+        self.focus_panel = FocusPanel(
+            parent=self.main_frame,
+            app=self,
+            focus_controller=self.focus_controller,
+        )
+        
+        self.view_scans_panel = ViewScansPanel(
+            parent=self.main_frame,
+            root=self.root,
+            app=self,
+        )
+
+        self.scan_profile_panel = ScanProfilePanel(
+            parent=self.main_frame,
+            root=self.root,
+            app=self,
+            scan_profile=self.scan_profile,
+        )
+
+        self.scan_setup_panel = ScanSetupPanel(
+            parent=self.main_frame,
+            root=self.root,
+            app=self,
+            scan_manager=self.scan_manager,
+            ui_dispatch=self.call_on_ui_thread,
+        )
+
+        self.focus_controller.sharpness_callback = self.focus_panel.update_sharpness
+
+        self.panels.append({
+            "name": "Info Panel",
+            "frame": self.info_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Scan Info Panel",
+            "frame": self.scan_status_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Stage Control Panel",
+            "frame": self.stage_control_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+        
+        self.panels.append({
+            "name": "Capture Panel",
+            "frame": self.capture_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Camera Settings Panel",
+            "frame": self.camera_settings_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Objective Control Panel",
+            "frame": self.objective_control_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Focus Panel",
+            "frame": self.focus_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.panels.append({
+            "name": "Scan Setup Panel",
+            "frame": self.scan_setup_panel.frame,
+            "var": BooleanVar(value=False)
+        })
+
+        self.update_panels()
+
+        self.init_menu_bar()
+
+        self.root.bind_all("<Button-1>", self.clear_focus, add="+")
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)        
+
+    # ------------- Initialization -------------
+
+    def call_on_ui_thread(self, callback, *args, **kwargs):
+        """Run Tk work on the main thread without blocking scan hardware."""
+        if self._closing:
+            return None
+        if threading.get_ident() == self._ui_thread_id:
+            return callback(*args, **kwargs)
+        self._ui_queue.put((callback, args, kwargs))
+        return None
+
+    def _schedule_ui_queue_poll(self):
+        if self._closing or self._ui_poll_job is not None:
+            return
+        self._ui_poll_job = self.root.after(15, self._drain_ui_queue)
+
+    def _drain_ui_queue(self):
+        self._ui_poll_job = None
+        if self._closing:
+            return
+        for _ in range(100):
+            try:
+                callback, args, kwargs = self._ui_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                callback(*args, **kwargs)
+            except Exception:
+                self.root.report_callback_exception(*sys.exc_info())
+        self._schedule_ui_queue_poll()
+
+    def init_menu_bar(self):
+        menu_bar = Menu(self.root)
+        file_menu = Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Quit", command=self.on_close)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
+        view_menu = Menu(menu_bar, tearoff=0)
+
+        view_menu.add_command(
+            label="Camera View",
+            command=lambda: self.set_view("Camera View"),
+        )
+        view_menu.add_command(
+            label="Map View",
+            command=self.show_normal_map_view,
+        )
+        view_menu.add_separator()
+
+        profile_menu = Menu(view_menu, tearoff=0)
+        profile_menu.add_command(
+            label="Create Profile",
+            command=self.scan_profile_panel.start_create,
+        )
+        profile_menu.add_command(
+            label="Load Profile",
+            command=self.scan_profile_panel.choose_and_load_profile,
+        )
+        view_menu.add_cascade(label="Scan Profiles", menu=profile_menu)
+        self.view_scans_panel.add_to_menu(view_menu)
+        view_menu.add_separator()
+
+        camera_menu = Menu(view_menu, tearoff=0)
+        camera_menu.add_checkbutton(
+            label="Chip Filter",
+            variable=self.camera_chip_filter_var,
+            command=lambda: self.set_view("Camera View"),
+        )
+        camera_menu.add_checkbutton(
+            label="Vignette Filter",
+            variable=self.camera_vignette_filter_var,
+            command=self.toggle_camera_vignette_filter,
+        )
+
+        view_menu.add_cascade(label="Camera Filters", menu=camera_menu)
+
+        menu_bar.add_cascade(label="View", menu=view_menu)
+
+        panel_menu = Menu(menu_bar, tearoff=0)
+
+        for panel in self.panels:
+            panel_menu.add_checkbutton(
+                label=panel["name"],
+                variable=panel["var"],
+                command=self.update_panels
+            )
+
+        menu_bar.add_cascade(label="Panels", menu=panel_menu)
+
+        map_menu = Menu(menu_bar, tearoff=0)
+        map_menu.add_radiobutton(
+            label="Live Map 2x",
+            variable=self.live_mapping_var,
+            value=True,
+            command=self._start_live_map_2x,
+        )
+        self._live_map_menu_index = map_menu.index("end")
+        map_menu.add_command(
+            label="Auto Map 2x",
+            command=self._start_auto_map_2x,
+        )
+        self._auto_map_menu_index = map_menu.index("end")
+        self.map_menu = map_menu
+        menu_bar.add_cascade(label="Map", menu=map_menu)
+
+        menu_bar.add_command(label="Scan", command=self.scan_setup_panel.show)
+
+        self.root.config(menu=menu_bar)
+
+    def _start_live_map_2x(self):
+        if not self.hardware_controls_available():
+            self.live_mapping_var.set(False)
+            return
+        self.mapper.set_live_map_2x()
+
+    def _start_auto_map_2x(self):
+        """Run the legacy Auto Map command through the scan worker."""
+        if not self.hardware_controls_available():
+            return
+        try:
+            self.scan_manager.start_scan(
+                scan_type="2x Scan",
+                on_error=lambda error: messagebox.showerror(
+                    "Auto Map Error",
+                    str(error),
+                    parent=self.root,
+                ),
+            )
+        except RuntimeError as error:
+            messagebox.showerror(
+                "Auto Map Error",
+                str(error),
+                parent=self.root,
+            )
+
+    def display_chip_dropdown(self, display=True):
+
+        shift = 0 if display else -30
+
+        if display:
+            self.chip_dropdown.place(relx=0.5, y=self.pos_chip, anchor="n")
+        else:
+            self.chip_dropdown.place_forget()
+
+        self.image_label.place(relx=0.5, y=self.pos_image + shift, anchor="n")
+        self.views_scans_button_panel.place(relx=0.5, y=self.pos_buttons + shift, anchor="n")
+
+        base_height = 205
+        new_height = base_height + shift
+
+        self.view_scans_panel.config(height=new_height)
+        self.view_scans_background.config(height=new_height - 2)
+
+    # ------------- Display Functions -------------
+
+    def display_map(self):
+        """Request a coalesced map redraw on the Tk thread."""
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.display_map)
+            return
+        if self._map_render_job is not None:
+            return
+        elapsed_ms = (time.monotonic() - self._last_map_render) * 1000
+        delay_ms = max(0, int(self._map_render_interval_ms - elapsed_ms))
+        if delay_ms:
+            self._map_render_job = self.root.after(
+                delay_ms,
+                self._render_scheduled_map,
+            )
+        else:
+            self._render_scheduled_map()
+
+    def _render_scheduled_map(self):
+        started_at = time.perf_counter()
+        self._map_render_job = None
+        self._last_map_render = time.monotonic()
+        canvas_width = self.map_canvas.winfo_width()
+        canvas_height = self.map_canvas.winfo_height()
+
+        if canvas_width == 1 or canvas_height == 1:
+            self.map_canvas.bind("<Configure>", lambda e: self.display_map())
+            return
+
+        with self._map_state_lock:
+            map_height, map_width = self.true_map.shape[:2]
+            img_ratio = map_width / map_height
+            canvas_ratio = canvas_width / canvas_height
+
+            if img_ratio > canvas_ratio:
+                new_width = canvas_width
+                new_height = int(canvas_width / img_ratio)
+            else:
+                new_height = canvas_height
+                new_width = int(canvas_height * img_ratio)
+
+            map_resized = cv2.resize(
+                self.true_map,
+                (new_width, new_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        map_image = Image.fromarray(map_resized.astype(np.uint8, copy=False))
+        if (
+            self._map_photo is not None
+            and self._map_photo.width() == map_image.width
+            and self._map_photo.height() == map_image.height
+        ):
+            self._map_photo.paste(map_image)
+        else:
+            self._map_photo = ImageTk.PhotoImage(map_image)
+            if self._map_canvas_image_id is not None:
+                self.map_canvas.delete(self._map_canvas_image_id)
+                self._map_canvas_image_id = None
+
+        x_center = canvas_width // 2
+        y_center = canvas_height // 2
+        if self._map_canvas_image_id is None:
+            self._map_canvas_image_id = self.map_canvas.create_image(
+                x_center,
+                y_center,
+                image=self._map_photo,
+                anchor="center",
+            )
+        else:
+            self.map_canvas.coords(
+                self._map_canvas_image_id,
+                x_center,
+                y_center,
+            )
+            self.map_canvas.itemconfigure(
+                self._map_canvas_image_id,
+                image=self._map_photo,
+            )
+        self.info_panel.update_fps(
+            render_ms=(time.perf_counter() - started_at) * 1000,
+            render_backend="CPU",
+        )
+
+    def display_image(self, image, color_order="RGB"):
+        """Present an image after resizing before conversion and annotation."""
+        started_at = time.perf_counter()
+        h, w = image.shape[:2]
+        lbl_w = self.img_label.winfo_width() or self.width
+        lbl_h = self.img_label.winfo_height() or self.height
+        if lbl_w < 10 or lbl_h < 10:
+            return None
+
+        scale = min(lbl_w / w, lbl_h / h)
+        display_width = max(1, min(lbl_w, int(round(w * scale))))
+        display_height = max(1, min(lbl_h, int(round(h * scale))))
+        interpolation = (
+            cv2.INTER_AREA
+            if display_width < w or display_height < h
+            else cv2.INTER_LINEAR
+        )
+        resized, resize_seconds = self._display_resizer.resize(
+            image,
+            (display_width, display_height),
+            interpolation,
+        )
+
+        convert_started_at = time.perf_counter()
+        color_order = color_order.upper()
+        if color_order == "BGR":
+            display_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        elif color_order == "GRAY":
+            display_rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
+        elif color_order == "RGB":
+            display_rgb = np.ascontiguousarray(resized)
+        else:
+            raise ValueError(f"Unsupported display color order: {color_order}")
+        convert_seconds = time.perf_counter() - convert_started_at
+
+        overlay_started_at = time.perf_counter()
+        if self.view_mode == "Camera View":
+            crop_ratio = CROP_RATIO.get(
+                self.magnification,
+                {"x": 1.0, "y": 1.0},
+            )
+            center_x = display_width // 2
+            center_y = display_height // 2
+            crop_width = int(round(display_width * crop_ratio["x"]))
+            crop_height = int(round(display_height * crop_ratio["y"]))
+            x1 = center_x - crop_width // 2
+            y1 = center_y - crop_height // 2
+            x2 = center_x + crop_width // 2
+            y2 = center_y + crop_height // 2
+            line_width = max(1, int(round(5 * scale)))
+            marker_radius = max(2, int(round(5 * scale)))
+            cv2.rectangle(
+                display_rgb,
+                (x1, y1),
+                (x2, y2),
+                (0, 255, 0),
+                line_width,
+            )
+            cv2.circle(
+                display_rgb,
+                (center_x, center_y),
+                radius=marker_radius,
+                color=(255, 0, 0),
+                thickness=-1,
+            )
+        overlay_seconds = time.perf_counter() - overlay_started_at
+
+        x_offset = (lbl_w - display_width) // 2
+        y_offset = (lbl_h - display_height) // 2
+
+        self._displayed_image_bounds = (
+            x_offset,
+            y_offset,
+            display_width,
+            display_height,
+            w,
+            h,
+        )
+
+        publish_started_at = time.perf_counter()
+        display_image = Image.fromarray(display_rgb)
+        if (
+            self._display_photo is not None
+            and self._display_photo.width() == display_width
+            and self._display_photo.height() == display_height
+        ):
+            self._display_photo.paste(display_image)
+        else:
+            self._display_photo = ImageTk.PhotoImage(display_image)
+        self.img_label.configure(image=self._display_photo, text="", anchor="center")
+        self.img_label.image = self._display_photo
+        publish_seconds = time.perf_counter() - publish_started_at
+
+        self._last_display_metrics = {
+            "backend": self._display_resizer.label,
+            "resize_ms": resize_seconds * 1000,
+            "convert_ms": convert_seconds * 1000,
+            "overlay_ms": overlay_seconds * 1000,
+            "publish_ms": publish_seconds * 1000,
+            "total_ms": (time.perf_counter() - started_at) * 1000,
+        }
+        return self._last_display_metrics
+
+    def display_image_message(self, message):
+        """Clear the current image and show a centered instruction instead."""
+        self._displayed_image_bounds = None
+        self.img_label.configure(
+            image="",
+            text=message,
+            fg="#555555",
+            font=("TkDefaultFont", 14),
+            anchor="center",
+        )
+        self.img_label.image = None
+        self._display_photo = None
+
+    # ------------- Util Functions -------------
+
+    def update_panels(self):
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.update_panels)
+            return
+        y_position = -2
+
+        for panel in self.panels:
+            frame = panel["frame"]
+            frame.place_forget()
+
+            if panel["var"].get():
+                frame.place(
+                    relx=1.0,
+                    rely=0.0,
+                    anchor="ne",
+                    y=y_position
+                )
+
+                frame.update_idletasks()
+
+                y_position += frame.winfo_height()
+
+    def close_all_panels(self):
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.close_all_panels)
+            return
+        for panel in self.panels:
+            panel["var"].set(False)
+        self.update_panels()
+        self.view_scans_panel.hide()
+        self.scan_profile_panel.hide()
+
+    def open_panel(self, name):
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.open_panel, name)
+            return
+        for panel in self.panels:
+            if panel["name"] == name:
+                panel["var"].set(True)
+                self.update_panels()
+                return
+
+    def enable_buttons(self):
+        if self._scan_controls_locked:
+            return
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.enable_buttons)
+            return
+        for btn in self.buttons:
+            btn.state(["!disabled"])
+        self.root.update_idletasks()
+
+    def disable_buttons(self):
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.disable_buttons)
+            return
+        for btn in self.buttons:
+            btn.state(["disabled"])
+        self.root.update_idletasks()
+
+    def register_button(self, button):
+        self.buttons.append(button)
+
+    def hardware_controls_available(self):
+        """Manual hardware controls are unavailable while a scan owns them."""
+        return not self._scan_controls_locked
+
+    def hardware_operation_allowed(self):
+        if not self._scan_controls_locked:
+            return True
+        return (
+            hasattr(self, "scan_manager")
+            and self.scan_manager.is_scan_worker_thread()
+        )
+
+    def clear_focus(self, event):
+        widget = event.widget
+        widget_path = str(widget).lower()
+
+        if isinstance(widget, (ttk.Combobox, ttk.Entry, tk.Entry)):
+            return
+        
+        if "popdown" in widget_path or "combobox" in widget_path:
+            return
+
+        self.root.focus_set()
+
+    def on_close(self):
+        if self._closing or self._shutdown_returning_to_objective:
+            return
+        shutdown_was_requested = self._shutdown_requested
+        self._shutdown_requested = True
+        if (
+            hasattr(self, "scan_manager")
+            and self.scan_manager.is_scan_running()
+        ):
+            if not shutdown_was_requested:
+                self.scan_manager.stop_scan()
+            self.root.after(50, self.on_close)
+            return
+
+        focus_controller = getattr(self, "focus_controller", None)
+        focus_thread = (
+            getattr(focus_controller, "focus_thread", None)
+            if focus_controller is not None
+            else None
+        )
+        if focus_thread is not None and focus_thread.is_alive():
+            focus_controller.stop_auto_focus()
+            focus_thread.join(timeout=0.05)
+        if focus_thread is not None and focus_thread.is_alive():
+            if self._focus_shutdown_started_at is None:
+                self._focus_shutdown_started_at = time.monotonic()
+            if time.monotonic() - self._focus_shutdown_started_at < 5.0:
+                self.root.after(50, self.on_close)
+                return
+            print("Shutdown warning: autofocus did not stop within 5 seconds.")
+
+        focus_shutdown_failed = (
+            focus_thread is not None and focus_thread.is_alive()
+        )
+        if not self._shutdown_focus_prepared and not focus_shutdown_failed:
+            self._shutdown_returning_to_objective = True
+            try:
+                print("Shutdown: returning to objective 1 and focusing...")
+                self.turret_controller.return_to_first_objective_and_focus()
+                print("Shutdown: objective 1 is focused.")
+            except Exception as error:
+                print(
+                    "Shutdown warning: could not return to objective 1 "
+                    f"and focus: {error}"
+                )
+            finally:
+                self._shutdown_returning_to_objective = False
+                self._shutdown_focus_prepared = True
+
+        self._closing = True
+        if self._ui_poll_job is not None:
+            self.root.after_cancel(self._ui_poll_job)
+            self._ui_poll_job = None
+        if self._map_render_job is not None:
+            self.root.after_cancel(self._map_render_job)
+            self._map_render_job = None
+        try:
+            if hasattr(self, "view_scans_panel"):
+                self.view_scans_panel.shutdown()
+            self.frame_processor.close()
+            self.turret_controller.close()
+            self.stage.disconnect()
+        except Exception as error:
+            print(f"Shutdown warning: {error}")
+        finally:
+            self.root.destroy()
+
+    def get_view(self):
+        return self.view_mode
+
+    def display_to_image_point(self, display_x, display_y):
+        """Map a click in ``img_label`` back to the current source image."""
+        if self._displayed_image_bounds is None:
+            return None
+
+        x_offset, y_offset, display_width, display_height, image_width, image_height = (
+            self._displayed_image_bounds
+        )
+        relative_x = display_x - x_offset
+        relative_y = display_y - y_offset
+        if not (0 <= relative_x < display_width and 0 <= relative_y < display_height):
+            return None
+
+        image_x = min(image_width - 1, int(relative_x * image_width / display_width))
+        image_y = min(image_height - 1, int(relative_y * image_height / display_height))
+        return image_x, image_y
+
+    def set_view(self, mode, filter_status=None):
+        if threading.get_ident() != self._ui_thread_id:
+            # Keep the inexpensive state visible to the scan worker while the
+            # actual Tk layout change waits in the UI queue.
+            self.view_mode = mode
+            self.call_on_ui_thread(self.set_view, mode, filter_status)
+            return
+        self.view_mode = mode
+
+        if hasattr(self, "scan_profile_panel") and mode not in (
+            "Create Search Profile",
+            "Load Search Profile",
+        ):
+            self.scan_profile_panel.hide()
+        if hasattr(self, "view_scans_panel") and mode not in ("Scan Results", "Flake Inspection", "Flake Centering"):
+            self.view_scans_panel.end_inspection(restore_view=False)
+            self.view_scans_panel.pause()
+            self.view_scans_panel.hide()
+
+        if filter_status is not None:
+            if mode == "Map":
+                # The live 2x map always uses the normal image now.  Mapper
+                # callers still pass the legacy flag, so explicitly discard it.
+                self.map_chip_filter_var.set(False)
+            elif mode == "Camera View":
+                self.camera_chip_filter_var.set(filter_status)
+
+        if mode == "Map":
+            self.display_map()
+            self.scan_results_canvas.pack_forget()
+            self.map_canvas.pack(fill=BOTH, expand=True) # Show map canvas
+            self.img_label.pack_forget() # Hide image label
+            pass
+        elif mode in ("Camera View", "Flake Inspection", "Flake Centering"):
+            self.scan_results_canvas.pack_forget()
+            self.img_label.pack(fill=BOTH, expand=True)
+            self.map_canvas.pack_forget() # Hide map canvas
+        elif mode == "Create Search Profile" or mode == "Load Search Profile":
+            self.scan_results_canvas.pack_forget()
+            self.img_label.pack(fill=BOTH, expand=True)
+            self.map_canvas.pack_forget()
+        elif mode == "Scan Results":
+            self.map_canvas.pack_forget()
+            self.img_label.pack_forget()
+            self.scan_results_canvas.pack(fill=BOTH, expand=True)
+
+        self.root.update_idletasks()
+
+    def get_live_mapping(self):
+        return self._live_mapping_status
+
+    def show_normal_map_view(self):
+        self.map_chip_filter_var.set(False)
+        self.set_view("Map")
+    
+    def set_live_mapping(self, live_mapping_status):
+        self._live_mapping_status = bool(live_mapping_status)
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(
+                self.live_mapping_var.set,
+                self._live_mapping_status,
+            )
+            return
+        self.live_mapping_var.set(self._live_mapping_status)
+
+    def get_filter(self):
+        if self.view_mode == "Map":
+            return False
+        if self.view_mode == "Camera View":
+            return self.get_camera_chip_filter()
+        return False
+    
+    def set_filter(self, status : bool):
+        if threading.get_ident() != self._ui_thread_id:
+            self.call_on_ui_thread(self.set_filter, status)
+            return
+        if self.view_mode == "Map":
+            self.map_chip_filter_var.set(False)
+        elif self.view_mode == "Camera View":
+            self.camera_chip_filter_var.set(status)
+
+    def get_map_chip_filter(self):
+        return False
+
+    def toggle_map_chip_filter(self):
+        self.map_chip_filter_var.set(False)
+        self.set_view("Map")
+
+    def set_scan_running(self, running):
+        self._scan_controls_locked = bool(running)
+        self.call_on_ui_thread(self._apply_scan_running, bool(running))
+
+    def _apply_scan_running(self, running):
+        self.scan_status_panel.set_scan_running(running)
+        self.camera_settings_panel.set_hardware_enabled(not running)
+        if running:
+            self.stage_control_panel.cancel_pending_hold_motion()
+        if hasattr(self, "map_menu"):
+            state = "disabled" if running else "normal"
+            self.map_menu.entryconfig(self._live_map_menu_index, state=state)
+            self.map_menu.entryconfig(self._auto_map_menu_index, state=state)
+        if running:
+            self.disable_buttons()
+        else:
+            self.enable_buttons()
+
+    def get_camera_chip_filter(self):
+        return self.camera_chip_filter_var.get()
+
+    def get_camera_vignette_filter(self):
+        return self.camera_vignette_filter_var.get()
+
+    def toggle_camera_vignette_filter(self):
+        if self.camera_vignette_filter_var.get():
+            try:
+                self.frame_processor.load_vignette_filter()
+            except (FileNotFoundError, ValueError) as exc:
+                self.disable_camera_vignette_filter(str(exc))
+                return
+        self.set_view("Camera View")
+
+    def disable_camera_vignette_filter(self, message=None):
+        self.camera_vignette_filter_var.set(False)
+        if message:
+            messagebox.showwarning(
+                "Vignette Filter Unavailable",
+                message,
+                parent=self.root,
+            )
+
+    def get_magnification(self):
+        return self.magnification
+
+    def set_magnification(self, magnification):
+        self.magnification = magnification
+
+    def get_resolution(self):
+        return self.resolution
+    
+    def set_resolution(self, resolution):
+        self.resolution = resolution
+
+    def get_vignette_substrate(self):
+        return self.vignette_substrate
+
+    def get_vignette_substrate_var(self):
+        return self.vignette_substrate_var
+
+    def set_vignette_substrate(self, substrate):
+        substrate = normalize_vignette_substrate(substrate)
+        if substrate == self.vignette_substrate:
+            if threading.get_ident() == self._ui_thread_id:
+                self._sync_vignette_substrate_var(substrate)
+            return
+        self.vignette_substrate = substrate
+        if threading.get_ident() == self._ui_thread_id:
+            self._sync_vignette_substrate_var(substrate)
+        else:
+            self.call_on_ui_thread(
+                self._sync_vignette_substrate_var,
+                substrate,
+            )
+        if hasattr(self, "frame_processor"):
+            self.frame_processor.clear_vignette_filter_cache()
+
+    def _sync_vignette_substrate_var(self, substrate):
+        label = vignette_substrate_label(substrate)
+        if self.vignette_substrate_var.get() != label:
+            self.vignette_substrate_var.set(label)
+
+    def get_true_map(self):
+        return self.true_map
+    
+    def set_true_map(self, map):
+        with self._map_state_lock:
+            self.true_map = map
+
+    def get_filter_map(self):
+        return self.filter_map
+    
+    def set_filter_map(self, filter_map):
+        with self._map_state_lock:
+            self.filter_map = filter_map
+
+    def get_map_state_lock(self):
+        return self._map_state_lock
+
+    def set_active_scan_profile(self, profile):
+        self.active_scan_profile = profile
+
+    def get_active_scan_profile(self):
+        return self.active_scan_profile
+
+if __name__ == "__main__":
+    root = Tk()
+    app = App(root)
+    root.mainloop()

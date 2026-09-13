@@ -9,11 +9,11 @@ import cv2
 import numpy as np
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Hardware.turret_controller import TurretController  # noqa: E402
-from Imaging.focus import FocusController  # noqa: E402
+from hardware.turret_controller import TurretController  # noqa: E402
+from imaging.focus import FocusController  # noqa: E402
 
 
 class _FakeApp:

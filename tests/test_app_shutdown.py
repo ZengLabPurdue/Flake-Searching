@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-APP_DIR = REPOSITORY_ROOT / "App"
+APP_DIR = REPOSITORY_ROOT / "app"
 sys.path.insert(0, str(APP_DIR))
 MODULE_PATH = APP_DIR / "app.py"
 SPEC = spec_from_file_location("flake_search_app_shutdown", MODULE_PATH)

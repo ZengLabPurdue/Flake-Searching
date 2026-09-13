@@ -9,20 +9,20 @@ import sys
 
 import cv2
 
-APP = Path(__file__).resolve().parents[1] / "App"
+APP = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))
 
 from config import PIXEL_SIZE
-from Imaging.image_metadata import read_png_metadata, save_png
-from Scanning.contour_finder import find_flakes
-from Scanning.flake_detection import Flake_Detector
-from Scanning.scan_profile import ScanProfile
+from imaging.image_metadata import read_png_metadata, save_png
+from scanning.contour_finder import find_flakes
+from scanning.flake_detection import Flake_Detector
+from scanning.scan_profile import ScanProfile
 
 
 def reprocess(scan):
     scan = Path(scan).resolve()
     if scan.parent != (APP / "Scans").resolve() or not scan.name.startswith("Full Scan "):
-        raise ValueError("Select a Full Scan directly inside App/Scans.")
+        raise ValueError("Select a Full Scan directly inside app/Scans.")
     manifest_path = scan / "flakes_found.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("detection_model") != "Region Detection":

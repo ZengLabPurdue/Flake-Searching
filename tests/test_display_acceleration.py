@@ -13,18 +13,18 @@ import numpy as np
 from PIL import Image
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from UI.display_acceleration import (  # noqa: E402
+from ui.display_acceleration import (  # noqa: E402
     CPU_BACKEND,
     OPENCL_BACKEND,
     DisplayResizer,
     opencl_available,
     requested_backend,
 )
-from UI.sparse_tile_viewer import SparseTileViewer  # noqa: E402
-from UI.panels.view_scans_panel import (  # noqa: E402
+from ui.sparse_tile_viewer import SparseTileViewer  # noqa: E402
+from ui.panels.view_scans_panel import (  # noqa: E402
     ViewScansPanel,
     detection_result_key,
     format_region_statistics,
@@ -685,10 +685,10 @@ class DisplayAccelerationTests(unittest.TestCase):
 
         with (
             patch(
-                "UI.panels.view_scans_panel.flake_detection.save_database",
+                "ui.panels.view_scans_panel.flake_detection.save_database",
                 return_value={"json": exported_json},
             ) as save_database,
-            patch("UI.panels.view_scans_panel.messagebox.showinfo") as showinfo,
+            patch("ui.panels.view_scans_panel.messagebox.showinfo") as showinfo,
         ):
             panel.save_selected_region_to_database()
 

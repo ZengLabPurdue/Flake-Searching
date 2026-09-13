@@ -8,11 +8,11 @@ import cv2
 import numpy as np
 
 
-APP_DIR = Path(__file__).resolve().parents[1] / "App"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
-from Imaging import image_metadata, vignetting_corrector  # noqa: E402
-from Imaging.flatfield_storage import (  # noqa: E402
+from imaging import image_metadata, vignetting_corrector  # noqa: E402
+from imaging.flatfield_storage import (  # noqa: E402
     VIGNETTE_SUBSTRATE_LABELS,
     VIGNETTE_SUBSTRATES,
     normalize_vignette_substrate,
@@ -20,7 +20,7 @@ from Imaging.flatfield_storage import (  # noqa: E402
     vignette_substrate_label,
     vignette_filter_path,
 )
-from Imaging.frame_processing import FrameProcessor  # noqa: E402
+from imaging.frame_processing import FrameProcessor  # noqa: E402
 
 
 class _FakeApp:
