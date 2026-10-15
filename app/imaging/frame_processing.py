@@ -15,6 +15,7 @@ from . import chip_edge_classifier
 from . import image_metadata
 from . import vignetting_corrector
 from .flatfield_storage import vignette_filter_path
+from .video_recorder import VideoRecorder
 
 class FrameProcessor:
     def __init__(
@@ -27,6 +28,7 @@ class FrameProcessor:
         self.root = root
         self.app = app
         self.stage = stage
+        self.video_recorder = VideoRecorder(HOME_DIR / "Saved Images")
 
         self.get_live_mapping = get_live_mapping
         self.place_frame_on_map = None
@@ -75,6 +77,7 @@ class FrameProcessor:
             img = img[:, :self.width * 3].reshape(self.height, self.width, 3)
 
             img = cv2.flip(img, -1)
+            self.video_recorder.submit(img)
 
             x, y, z = self.stage.get_position()
 
@@ -685,6 +688,7 @@ class FrameProcessor:
         return self.hcam
 
     def close(self):
+        self.video_recorder.close()
         try:
             if self.hcam is not None:
                 self.hcam.Close()
